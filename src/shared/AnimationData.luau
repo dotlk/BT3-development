@@ -55,7 +55,7 @@ local AnimationData = {
 
             Damage = 8,
             HitAt = 0.60,
-            Hitstop = 0.65,
+            Hitstop = 0.10,
             Next = "Finisher4",
 
             Hitbox = {
@@ -74,7 +74,7 @@ local AnimationData = {
 
             Damage = 12,
             HitAt = 0.90,
-            Hitstop = 0.60,
+            Hitstop = 0.20,
             Next = nil,
 
             Hitbox = {
@@ -105,6 +105,55 @@ local AnimationData = {
         Knockback1 = {
             Id = "rbxassetid://128003370985305",
             Priority = Enum.AnimationPriority.Action2,
+            Looped = false,
+            Speed = 1,
+        },
+    },
+
+    -- ==========================================
+    -- MOVIMENTACAO
+    -- ==========================================
+
+    Movement = {
+
+        QuickDashForward = {
+            Id = "rbxassetid://98744320846968",
+            Priority = Enum.AnimationPriority.Action,
+            Looped = false,
+            Speed = 1,
+        },
+
+        QuickDashBackward = {
+            Id = "rbxassetid://109919687392363",
+            Priority = Enum.AnimationPriority.Action,
+            Looped = false,
+            Speed = 1,
+        },
+
+        QuickDashLeft = {
+            Id = "rbxassetid://89319983315906",
+            Priority = Enum.AnimationPriority.Action,
+            Looped = false,
+            Speed = 1,
+        },
+
+        QuickDashRight = {
+            Id = "rbxassetid://112780630414911",
+            Priority = Enum.AnimationPriority.Action,
+            Looped = false,
+            Speed = 1,
+        },
+
+        QuickRollLeft = {
+            Id = "rbxassetid://80588873649646",
+            Priority = Enum.AnimationPriority.Action,
+            Looped = false,
+            Speed = 1,
+        },
+
+        QuickRollRight = {
+            Id = "rbxassetid://116175498198155",
+            Priority = Enum.AnimationPriority.Action,
             Looped = false,
             Speed = 1,
         },
