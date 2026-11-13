@@ -1,13 +1,17 @@
 
 -- CombatServer.server.luau
--- Deteccao e validacao de ataques no servidor
--- Resolucao de acertos delegada ao CombatHit
+-- Validacao de ataques e confirmacao de impactos
+-- Envia o resultado do golpe ao cliente
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local CombatHit = require(script.Parent:WaitForChild("CombatHit"))
+
+local AnimationData = require(
+    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("AnimationData")
+)
 
 local ATTACK_RANGE = 5
 local ATTACK_COOLDOWN = 0.10
@@ -30,8 +34,7 @@ if not attackEvent then
     attackEvent.Parent = ReplicatedStorage
 end
 
--- RemoteEvent do Hitstop
--- NOVO: sera utilizado nas proximas etapas
+-- RemoteEvent da confirmacao e Hitstop
 
 local hitstopEvent = ReplicatedStorage:FindFirstChild("CombatHitstop")
 
@@ -45,9 +48,30 @@ end
 
 local lastAttack = {}
 
+-- Responde ao cliente com o resultado do impacto
+
+local function sendHitResult(player, attackName, hitConfirmed)
+    local duration = 0
+
+    if hitConfirmed then
+        local attackData = AnimationData.Combat[attackName]
+
+        if attackData then
+            duration = attackData.Hitstop or 0
+        end
+    end
+
+    hitstopEvent:FireClient(
+        player,
+        attackName,
+        duration,
+        hitConfirmed
+    )
+end
+
 local function processAttack(player, attackName)
 
-    -- Validacao do ataque recebido
+    -- Validacao do nome do ataque
 
     if typeof(attackName) ~= "string" then
         return
@@ -65,6 +89,8 @@ local function processAttack(player, attackName)
 
     if lastAttack[player]
         and now - lastAttack[player] < ATTACK_COOLDOWN then
+
+        sendHitResult(player, attackName, false)
         return
     end
 
@@ -73,6 +99,7 @@ local function processAttack(player, attackName)
     local character = player.Character
 
     if not character then
+        sendHitResult(player, attackName, false)
         return
     end
 
@@ -80,16 +107,16 @@ local function processAttack(player, attackName)
     local root = character:FindFirstChild("HumanoidRootPart")
 
     if not humanoid or humanoid.Health <= 0 or not root then
+        sendHitResult(player, attackName, false)
         return
     end
 
-    lastAttack[player] = now
-
-    -- Localizacao do alvo de treinamento
+    -- Localizacao do alvo
 
     local dummy = Workspace:FindFirstChild("TrainingDummy")
 
     if not dummy then
+        sendHitResult(player, attackName, false)
         return
     end
 
@@ -97,10 +124,12 @@ local function processAttack(player, attackName)
     local dummyRoot = dummy:FindFirstChild("HumanoidRootPart")
 
     if not dummyHumanoid or not dummyRoot then
+        sendHitResult(player, attackName, false)
         return
     end
 
     if dummyHumanoid.Health <= 0 then
+        sendHitResult(player, attackName, false)
         return
     end
 
@@ -117,6 +146,7 @@ local function processAttack(player, attackName)
     local distance = horizontalOffset.Magnitude
 
     if distance > ATTACK_RANGE then
+        sendHitResult(player, attackName, false)
         return
     end
 
@@ -131,6 +161,7 @@ local function processAttack(player, attackName)
         )
 
         if forward.Magnitude < 0.001 then
+            sendHitResult(player, attackName, false)
             return
         end
 
@@ -139,9 +170,14 @@ local function processAttack(player, attackName)
         )
 
         if facingDot < MIN_FACING_DOT then
+            sendHitResult(player, attackName, false)
             return
         end
     end
+
+    -- Cooldown registrado apos validacoes basicas
+
+    lastAttack[player] = now
 
     -- Resolucao do acerto
 
@@ -150,6 +186,14 @@ local function processAttack(player, attackName)
         dummy,
         attackName,
         damage
+    )
+
+    -- Responde tanto para acertos quanto para erros
+
+    sendHitResult(
+        player,
+        attackName,
+        hitApplied == true
     )
 
     if not hitApplied then

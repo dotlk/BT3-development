@@ -1,15 +1,19 @@
 
 -- CombatController.client.luau
 -- Sistema de combo com quatro ataques encadeados
+-- Impacto por progresso da animacao
+-- Hitstop com confirmacao do servidor
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local shared = ReplicatedStorage:WaitForChild("Shared")
 
 local attackEvent = ReplicatedStorage:WaitForChild("CombatAttack")
+local hitstopEvent = ReplicatedStorage:WaitForChild("CombatHitstop")
 
 local StateMachine = require(shared:WaitForChild("StateMachine"))
 local AnimationData = require(shared:WaitForChild("AnimationData"))
@@ -23,6 +27,9 @@ local RECOVERY_DURATION = 0.2
 local COMBO_WINDOW_START = 0.25
 local COMBO_TRANSITION = 0.75
 
+-- Evita que uma resposta perdida bloqueie o combo
+local HIT_CONFIRM_TIMEOUT = 0.35
+
 local fighter = StateMachine.new()
 
 local humanoid = nil
@@ -35,7 +42,38 @@ local attackDuration = 0
 local queuedAttack = nil
 local attackSequence = 0
 
--- Prepara o personagem e carrega as animacoes
+-- Controle do impacto
+local hitRequested = false
+local hitResolved = false
+local hitRequestedAt = 0
+
+-- Controle do Hitstop
+local hitstopStartedAt = nil
+local hitstopEndsAt = 0
+local totalPausedTime = 0
+
+-- Tempo do ataque sem contar as pausas
+local function getAttackElapsed()
+    local now = os.clock()
+    local paused = totalPausedTime
+
+    if hitstopStartedAt then
+        paused += now - hitstopStartedAt
+    end
+
+    return math.max(
+        0,
+        now - attackStartedAt - paused
+    )
+end
+
+local function clearHitstop()
+    hitstopStartedAt = nil
+    hitstopEndsAt = 0
+    totalPausedTime = 0
+end
+
+-- Prepara o personagem e suas animacoes
 local function setupCharacter(character)
     attackSequence += 1
 
@@ -45,6 +83,12 @@ local function setupCharacter(character)
     queuedAttack = nil
     attackStartedAt = 0
     attackDuration = 0
+
+    hitRequested = false
+    hitResolved = false
+    hitRequestedAt = 0
+
+    clearHitstop()
 
     for _, track in pairs(attackTracks) do
         track:Stop(0)
@@ -80,6 +124,11 @@ local function finishCombo(sequence)
 
     queuedAttack = nil
     currentAttack = nil
+
+    hitRequested = false
+    hitResolved = false
+
+    clearHitstop()
 
     if fighter:GetState() == "Attack" then
         fighter:Transition("Recovery")
@@ -120,7 +169,6 @@ local function startAttack(attackName)
     end
 
     attackSequence += 1
-    local sequence = attackSequence
 
     -- Interrompe o golpe anterior
     if currentAttack then
@@ -135,9 +183,15 @@ local function startAttack(attackName)
     queuedAttack = nil
     attackStartedAt = os.clock()
 
+    hitRequested = false
+    hitResolved = false
+    hitRequestedAt = 0
+
+    clearHitstop()
+
     track:Stop(0)
     track:Play(0.08)
-    track:AdjustSpeed(data.Speed)
+    track:AdjustSpeed(data.Speed or 1)
 
     local duration = data.Duration or track.Length
 
@@ -146,62 +200,185 @@ local function startAttack(attackName)
     end
 
     attackDuration = math.max(
-        duration / data.Speed,
+        duration / (data.Speed or 1),
         MIN_ATTACK_DURATION
     )
 
     print("[Combat] Ataque:", attackName)
+end
 
-    -- Solicita a verificacao de impacto ao servidor
-    local hitDelay = data.HitDelay or 0.15
+-- Recebe a resposta do servidor
+hitstopEvent.OnClientEvent:Connect(function(
+    attackName,
+    duration,
+    hitConfirmed
+)
+    if typeof(attackName) ~= "string"
+        or typeof(duration) ~= "number"
+        or typeof(hitConfirmed) ~= "boolean" then
+        return
+    end
 
-    task.delay(hitDelay, function()
-        if sequence ~= attackSequence then
+    if fighter:GetState() ~= "Attack" then
+        return
+    end
+
+    if currentAttack ~= attackName then
+        return
+    end
+
+    if not hitRequested or hitResolved then
+        return
+    end
+
+    local track = attackTracks[attackName]
+    local data = AnimationData.Combat[attackName]
+
+    if not track or not data then
+        return
+    end
+
+    -- O servidor respondeu: nao precisamos mais
+    -- aguardar confirmacao deste golpe
+    hitResolved = true
+
+    if not hitConfirmed then
+        print("[Combat] Golpe nao confirmado:", attackName)
+        return
+    end
+
+    -- Sem Hitstop, apenas confirma o impacto
+    if duration <= 0 then
+        return
+    end
+
+    -- Limite de seguranca
+    if duration > 2 then
+        return
+    end
+
+    if not track.IsPlaying then
+        return
+    end
+
+    local now = os.clock()
+
+    hitstopStartedAt = now
+    hitstopEndsAt = now + duration
+
+    track:AdjustSpeed(0)
+
+    print(
+        "[Hitstop] INICIO:",
+        attackName,
+        "| Duracao:",
+        duration
+    )
+end)
+
+-- Atualiza impacto, Hitstop e transicoes
+RunService.Heartbeat:Connect(function()
+    if not currentAttack then
+        return
+    end
+
+    if fighter:GetState() ~= "Attack" then
+        return
+    end
+
+    local attackName = currentAttack
+    local data = AnimationData.Combat[attackName]
+
+    if not data or attackDuration <= 0 then
+        return
+    end
+
+    -- Durante o Hitstop, nao avanca o combo
+    if hitstopStartedAt then
+        local now = os.clock()
+
+        if now < hitstopEndsAt then
             return
         end
 
-        if not humanoid or humanoid.Health <= 0 then
-            return
+        totalPausedTime += now - hitstopStartedAt
+
+        hitstopStartedAt = nil
+        hitstopEndsAt = 0
+
+        local track = attackTracks[attackName]
+
+        if track and track.IsPlaying then
+            track:AdjustSpeed(data.Speed or 1)
         end
 
-        if fighter:GetState() ~= "Attack" then
+        print("[Hitstop] FIM:", attackName)
+    end
+
+    local elapsed = getAttackElapsed()
+    local progress = elapsed / attackDuration
+
+    -- Solicita o impacto uma unica vez
+    local hitAt = math.clamp(data.HitAt or 0.90, 0, 1)
+
+    if not hitRequested and progress >= hitAt then
+        hitRequested = true
+        hitRequestedAt = os.clock()
+
+        if humanoid and humanoid.Health > 0 then
+            attackEvent:FireServer(attackName)
+
+            print(
+                "[Combat] Impacto solicitado:",
+                attackName,
+                "| Progresso:",
+                progress
+            )
+        else
+            hitResolved = true
+        end
+    end
+
+    -- Aguarda resposta positiva ou negativa
+    if hitRequested and not hitResolved then
+        if os.clock() - hitRequestedAt >= HIT_CONFIRM_TIMEOUT then
+            hitResolved = true
+
+            print(
+                "[Combat] Timeout de confirmacao:",
+                attackName
+            )
+        else
             return
         end
+    end
 
-        attackEvent:FireServer(attackName)
-    end)
+    -- Nenhum golpe pode ser cancelado
+    -- antes de solicitar seu impacto
+    if not hitRequested or not hitResolved then
+        return
+    end
 
-    -- Calcula o momento de transicao para o proximo golpe
+    -- Transicao apos impacto e Hitstop
     local transitionPoint = data.Transition or COMBO_TRANSITION
+    local transitionTime = attackDuration * transitionPoint
 
-    task.delay(attackDuration * transitionPoint, function()
-        if sequence ~= attackSequence then
-            return
-        end
+    if queuedAttack and elapsed >= transitionTime then
+        local nextAttack = queuedAttack
+        startAttack(nextAttack)
+        return
+    end
 
+    -- Finaliza ao atingir a duracao do ataque
+    if elapsed >= attackDuration then
         if queuedAttack then
             local nextAttack = queuedAttack
             startAttack(nextAttack)
-            return
+        else
+            finishCombo(attackSequence)
         end
-
-        -- Aguarda ate o fim da janela do combo
-        local remaining = attackDuration * (1 - transitionPoint)
-
-        task.delay(remaining, function()
-            if sequence ~= attackSequence then
-                return
-            end
-
-            if queuedAttack then
-                local nextAttack = queuedAttack
-                startAttack(nextAttack)
-            else
-                finishCombo(sequence)
-            end
-        end)
-    end)
-end
+    end
+end)
 
 -- Processa o clique do jogador
 local function performAttack()
@@ -234,7 +411,7 @@ local function performAttack()
         return
     end
 
-    local elapsed = os.clock() - attackStartedAt
+    local elapsed = getAttackElapsed()
     local progress = elapsed / attackDuration
 
     if progress >= COMBO_WINDOW_START and progress <= 1 then
