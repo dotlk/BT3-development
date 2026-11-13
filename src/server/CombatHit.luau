@@ -1,6 +1,7 @@
 
 -- CombatHit.luau
--- Resolucao de acertos, Hitstun e Knockback
+-- Resolucao de acertos, Hitstun, Knockback e Hitstop
+-- Reacoes com pose inicial de impacto
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ContentProvider = game:GetService("ContentProvider")
@@ -19,10 +20,13 @@ local AnimationData = require(
 
 local CombatHit = {}
 
--- Configuracoes provisórias
+-- Configuracoes provisorias
 local HITSTUN_DURATION = 0.25
 local KNOCKBACK_DURATION = 0.55
 local KNOCKBACK_SPEED = 35
+
+-- Posicao inicial da animacao durante o Hitstop
+local HIT_REACTION_FREEZE_TIME = 0.08
 
 local HIT_ANIMATIONS = {
     Punch1 = "Hit2",
@@ -45,6 +49,7 @@ for name, data in pairs(AnimationData.HitReactions) do
     local animation = Instance.new("Animation")
     animation.Name = name
     animation.AnimationId = data.Id
+
     reactionAnimations[name] = animation
 end
 
@@ -93,7 +98,10 @@ local function prepareReactions(humanoid)
 
     reactionTracks[humanoid] = tracks
 
-    print("[HitReaction] Tracks preparados:", humanoid.Parent.Name)
+    print(
+        "[HitReaction] Tracks preparados:",
+        humanoid.Parent.Name
+    )
 
     return tracks
 end
@@ -102,12 +110,16 @@ end
 task.spawn(function()
     local dummy = Workspace:WaitForChild("TrainingDummy")
     local humanoid = dummy:WaitForChild("Humanoid")
+
     prepareReactions(humanoid)
 end)
 
 local function stopHitAnimation(humanoid)
     local tracks = reactionTracks[humanoid]
-    if not tracks then return end
+
+    if not tracks then
+        return
+    end
 
     for _, track in pairs(tracks) do
         if track.IsPlaying then
@@ -116,26 +128,67 @@ local function stopHitAnimation(humanoid)
     end
 end
 
-local function playHitAnimation(humanoid, attackName)
+-- Reproduz a animacao de reacao
+-- Pode iniciar congelada em uma pose de impacto
+local function playHitAnimation(
+    humanoid,
+    attackName,
+    frozen
+)
     local reactionName = HIT_ANIMATIONS[attackName]
-    if not reactionName then return end
+
+    if not reactionName then
+        return nil, 1
+    end
 
     local tracks = prepareReactions(humanoid)
     local track = tracks[reactionName]
 
     if not track then
-        warn("[HitReaction] Track nao encontrado:", reactionName)
-        return
+        warn(
+            "[HitReaction] Track nao encontrado:",
+            reactionName
+        )
+        return nil, 1
     end
 
     stopHitAnimation(humanoid)
 
-    track:Play(0.05)
-    track:AdjustSpeed(
+    local speed =
         AnimationData.HitReactions[reactionName].Speed or 1
+
+    -- Inicia sem fade-in
+    track:Play(0)
+
+    if frozen then
+        -- Congela a animacao imediatamente
+        track:AdjustSpeed(0)
+
+        -- Avanca ate uma pose inicial de impacto
+        -- sem adicionar atraso ao golpe.
+        --
+        -- Se Length ainda for 0, a posicao
+        -- permanecera no inicio da animacao.
+        local length = track.Length
+
+        if length > 0 then
+            track.TimePosition = math.min(
+                HIT_REACTION_FREEZE_TIME,
+                math.max(length - 0.001, 0)
+            )
+        end
+    else
+        track:AdjustSpeed(speed)
+    end
+
+    print(
+        "[HitReaction] Executando:",
+        reactionName,
+        "| Congelada:",
+        frozen
     )
 
-    print("[HitReaction] Executando:", reactionName)
+    return track, speed
 end
 
 local function getReactionState(humanoid)
@@ -145,10 +198,13 @@ local function getReactionState(humanoid)
         state = {
             Sequence = 0,
             Active = false,
+
             WalkSpeed = humanoid.WalkSpeed,
             JumpPower = humanoid.JumpPower,
             JumpHeight = humanoid.JumpHeight,
+
             KnockbackConnection = nil,
+            HitstopEndsAt = 0,
         }
 
         reactionStates[humanoid] = state
@@ -173,6 +229,7 @@ local function beginReaction(defender, humanoid, state)
 
     state.Active = true
     state.Sequence += 1
+    state.HitstopEndsAt = 0
 
     defender:SetAttribute("CombatStunned", true)
 
@@ -183,14 +240,24 @@ local function beginReaction(defender, humanoid, state)
     return state.Sequence
 end
 
-local function finishReaction(defender, humanoid, state, sequence)
-    if state.Sequence ~= sequence then return end
+local function finishReaction(
+    defender,
+    humanoid,
+    state,
+    sequence
+)
+    if state.Sequence ~= sequence then
+        return
+    end
 
     stopKnockback(state)
 
-    if not humanoid.Parent then return end
+    if not humanoid.Parent then
+        return
+    end
 
     state.Active = false
+    state.HitstopEndsAt = 0
 
     defender:SetAttribute("CombatStunned", false)
 
@@ -203,101 +270,281 @@ local function finishReaction(defender, humanoid, state, sequence)
     print("[HitReaction] FIM:", defender.Name)
 end
 
-local function applyHitstun(defender, attackName)
-    local humanoid = defender:FindFirstChildOfClass("Humanoid")
-    if not humanoid or humanoid.Health <= 0 then return end
+-- Consulta o Hitstop configurado para o golpe
+local function getHitstopDuration(attackName)
+    local attackData = AnimationData.Combat[attackName]
 
-    local state = getReactionState(humanoid)
-    stopKnockback(state)
+    if not attackData then
+        return 0
+    end
 
-    local sequence = beginReaction(defender, humanoid, state)
+    return math.clamp(
+        attackData.Hitstop or 0,
+        0,
+        2
+    )
+end
 
-    print("[Hitstun] INICIO:", defender.Name)
+-- Congela o defensor e executa uma funcao
+-- quando o Hitstop termina
+local function applyDefenderHitstop(
+    defender,
+    humanoid,
+    state,
+    sequence,
+    attackName,
+    onComplete
+)
+    local duration = getHitstopDuration(attackName)
+    local frozen = duration > 0
 
-    playHitAnimation(humanoid, attackName)
+    local track, speed = playHitAnimation(
+        humanoid,
+        attackName,
+        frozen
+    )
 
-    task.delay(HITSTUN_DURATION, function()
-        finishReaction(defender, humanoid, state, sequence)
+    if not frozen then
+        onComplete()
+        return
+    end
+
+    state.HitstopEndsAt = os.clock() + duration
+
+    print(
+        "[DefenderHitstop] INICIO:",
+        defender.Name,
+        "| Golpe:",
+        attackName,
+        "| Duracao:",
+        duration
+    )
+
+    task.delay(duration, function()
+        -- Ignora callbacks de golpes antigos
+        if state.Sequence ~= sequence then
+            return
+        end
+
+        if not humanoid.Parent then
+            return
+        end
+
+        state.HitstopEndsAt = 0
+
+        if track and track.IsPlaying then
+            track:AdjustSpeed(speed)
+        end
+
+        print(
+            "[DefenderHitstop] FIM:",
+            defender.Name,
+            "| Golpe:",
+            attackName
+        )
+
+        onComplete()
     end)
 end
 
-local function applyKnockback(attacker, defender, attackName)
-    local humanoid = defender:FindFirstChildOfClass("Humanoid")
-    local root = defender:FindFirstChild("HumanoidRootPart")
+local function applyHitstun(defender, attackName)
+    local humanoid =
+        defender:FindFirstChildOfClass("Humanoid")
 
-    if not humanoid or humanoid.Health <= 0 or not root then
+    if not humanoid or humanoid.Health <= 0 then
+        return
+    end
+
+    local state = getReactionState(humanoid)
+
+    stopKnockback(state)
+
+    local sequence = beginReaction(
+        defender,
+        humanoid,
+        state
+    )
+
+    print("[Hitstun] INICIO:", defender.Name)
+
+    applyDefenderHitstop(
+        defender,
+        humanoid,
+        state,
+        sequence,
+        attackName,
+        function()
+            -- O Hitstun efetivo comeca
+            -- somente apos o Hitstop
+            task.delay(HITSTUN_DURATION, function()
+                finishReaction(
+                    defender,
+                    humanoid,
+                    state,
+                    sequence
+                )
+            end)
+        end
+    )
+end
+
+local function applyKnockback(
+    attacker,
+    defender,
+    attackName
+)
+    local humanoid =
+        defender:FindFirstChildOfClass("Humanoid")
+
+    local root =
+        defender:FindFirstChild("HumanoidRootPart")
+
+    if not humanoid
+        or humanoid.Health <= 0
+        or not root then
         return
     end
 
     local attackerCharacter = attacker.Character
+
     local attackerRoot = attackerCharacter
         and attackerCharacter:FindFirstChild("HumanoidRootPart")
 
-    if not attackerRoot then return end
+    if not attackerRoot then
+        return
+    end
 
     local offset = root.Position - attackerRoot.Position
-    local horizontal = Vector3.new(offset.X, 0, offset.Z)
+
+    local horizontal = Vector3.new(
+        offset.X,
+        0,
+        offset.Z
+    )
 
     if horizontal.Magnitude < 0.001 then
         local look = attackerRoot.CFrame.LookVector
-        horizontal = Vector3.new(look.X, 0, look.Z)
+
+        horizontal = Vector3.new(
+            look.X,
+            0,
+            look.Z
+        )
     end
 
-    if horizontal.Magnitude < 0.001 then return end
+    if horizontal.Magnitude < 0.001 then
+        return
+    end
 
     local direction = horizontal.Unit
     local state = getReactionState(humanoid)
 
     stopKnockback(state)
 
-    local sequence = beginReaction(defender, humanoid, state)
+    local sequence = beginReaction(
+        defender,
+        humanoid,
+        state
+    )
 
-    playHitAnimation(humanoid, attackName)
+    -- Interrompe o deslocamento horizontal anterior
+    local currentVelocity = root.AssemblyLinearVelocity
 
-    local elapsed = 0
+    root.AssemblyLinearVelocity = Vector3.new(
+        0,
+        currentVelocity.Y,
+        0
+    )
 
-    -- Impulso horizontal com desaceleracao linear
-    state.KnockbackConnection = RunService.Heartbeat:Connect(function(dt)
-        if state.Sequence ~= sequence or not root.Parent then
-            stopKnockback(state)
-            return
+    applyDefenderHitstop(
+        defender,
+        humanoid,
+        state,
+        sequence,
+        attackName,
+        function()
+            if state.Sequence ~= sequence then
+                return
+            end
+
+            if not root.Parent then
+                return
+            end
+
+            local elapsed = 0
+
+            -- Knockback com desaceleracao
+            -- iniciado somente apos o Hitstop
+            state.KnockbackConnection =
+                RunService.Heartbeat:Connect(function(dt)
+
+                if state.Sequence ~= sequence
+                    or not root.Parent then
+
+                    stopKnockback(state)
+                    return
+                end
+
+                elapsed += dt
+
+                local progress = math.min(
+                    elapsed / KNOCKBACK_DURATION,
+                    1
+                )
+
+                local speed =
+                    KNOCKBACK_SPEED * (1 - progress)
+
+                local velocity =
+                    root.AssemblyLinearVelocity
+
+                root.AssemblyLinearVelocity = Vector3.new(
+                    direction.X * speed,
+                    velocity.Y,
+                    direction.Z * speed
+                )
+
+                if progress >= 1 then
+                    stopKnockback(state)
+                end
+            end)
+
+            print(
+                "[Knockback] INICIO:",
+                defender.Name
+            )
+
+            task.delay(KNOCKBACK_DURATION, function()
+                finishReaction(
+                    defender,
+                    humanoid,
+                    state,
+                    sequence
+                )
+            end)
         end
-
-        elapsed += dt
-
-        local progress = math.min(
-            elapsed / KNOCKBACK_DURATION,
-            1
-        )
-
-        local speed = KNOCKBACK_SPEED * (1 - progress)
-
-        local currentVelocity = root.AssemblyLinearVelocity
-
-        root.AssemblyLinearVelocity = Vector3.new(
-            direction.X * speed,
-            currentVelocity.Y,
-            direction.Z * speed
-        )
-
-        if progress >= 1 then
-            stopKnockback(state)
-        end
-    end)
-
-    print("[Knockback] INICIO:", defender.Name)
-
-    task.delay(KNOCKBACK_DURATION, function()
-        finishReaction(defender, humanoid, state, sequence)
-    end)
+    )
 end
 
-function CombatHit.Apply(attacker, defender, attackName, damage)
-    local attackData = HitReactionData.Attacks[attackName]
-    if not attackData then return false end
+function CombatHit.Apply(
+    attacker,
+    defender,
+    attackName,
+    damage
+)
+    local attackData =
+        HitReactionData.Attacks[attackName]
 
-    local humanoid = defender:FindFirstChildOfClass("Humanoid")
-    if not humanoid or humanoid.Health <= 0 then return false end
+    if not attackData then
+        return false
+    end
+
+    local humanoid =
+        defender:FindFirstChildOfClass("Humanoid")
+
+    if not humanoid or humanoid.Health <= 0 then
+        return false
+    end
 
     if attackData.Result ~= HitReactionData.Result.Hit then
         return false
@@ -306,11 +553,19 @@ function CombatHit.Apply(attacker, defender, attackName, damage)
     humanoid:TakeDamage(damage)
 
     if humanoid.Health > 0 then
-        if attackData.Reaction == HitReactionData.Reaction.Stun then
+        if attackData.Reaction ==
+            HitReactionData.Reaction.Stun then
+
             applyHitstun(defender, attackName)
 
-        elseif attackData.Reaction == HitReactionData.Reaction.Knockback then
-            applyKnockback(attacker, defender, attackName)
+        elseif attackData.Reaction ==
+            HitReactionData.Reaction.Knockback then
+
+            applyKnockback(
+                attacker,
+                defender,
+                attackName
+            )
         end
     end
 
