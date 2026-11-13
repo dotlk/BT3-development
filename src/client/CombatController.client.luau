@@ -23,7 +23,8 @@ local AnimationData = require(shared:WaitForChild("AnimationData"))
 local FIRST_ATTACK = "Punch1"
 local DEFAULT_ATTACK_DURATION = 0.4
 local MIN_ATTACK_DURATION = 0.15
-local RECOVERY_DURATION = 0.2
+local RECOVERY_NORMAL = 0.15
+local RECOVERY_FINISHER = 0.60
 local COMBO_WINDOW_START = 0.25
 local COMBO_TRANSITION = 0.75
 local HIT_CONFIRM_TIMEOUT = 0.60
@@ -208,6 +209,8 @@ local function finishCombo(sequence)
         return
     end
 
+    local lastAttack = currentAttack
+
     queuedAttack = nil
     currentAttack = nil
 
@@ -217,13 +220,18 @@ local function finishCombo(sequence)
 
     clearHitstop()
 
+    local recoveryDuration = RECOVERY_NORMAL
+    if lastAttack == "Finisher4" then
+        recoveryDuration = RECOVERY_FINISHER
+    end
+
     if fighter:GetState() == "Attack" then
         fighter:Transition("Recovery")
     end
 
-    print("[Combat] Recovery iniciado")
+    print("[Combat] Recovery iniciado:", recoveryDuration)
 
-    task.delay(RECOVERY_DURATION, function()
+    task.delay(recoveryDuration, function()
         if sequence ~= attackSequence then
             return
         end

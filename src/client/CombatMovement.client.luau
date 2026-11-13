@@ -1,104 +1,89 @@
-
 -- CombatMovement.client.luau
--- Movimentação terrestre com lock-on
+-- Apenas movimentacao direcional durante Lock-On.
+-- Fora do Lock-On, o controlador padrao do Roblox assume o WASD.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local ContextActionService = game:GetService("ContextActionService")
-local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
-local dummy = Workspace:WaitForChild("TrainingDummy")
-
-local WALK_SPEED = 12
 local DEADZONE = 0.05
 
 local humanoid
 local root
+local activeCharacter
+local targetValue
 
-local input = {
-    Forward = false,
-    Backward = false,
-    Left = false,
-    Right = false
-}
+local function getTarget()
+    if not targetValue or not targetValue.Parent then return nil end
+
+    local part = targetValue.Value
+    if not part or not part:IsA("BasePart") or not part.Parent then
+        return nil
+    end
+
+    local model = part:FindFirstAncestorOfClass("Model")
+    local enemyHumanoid = model and model:FindFirstChildOfClass("Humanoid")
+    if not enemyHumanoid or enemyHumanoid.Health <= 0 then
+        return nil
+    end
+
+    return part
+end
+
+local function getInput()
+    if UserInputService:GetFocusedTextBox() then return 0, 0 end
+
+    local forward =
+        (UserInputService:IsKeyDown(Enum.KeyCode.W) and 1 or 0)
+        - (UserInputService:IsKeyDown(Enum.KeyCode.S) and 1 or 0)
+
+    local right =
+        (UserInputService:IsKeyDown(Enum.KeyCode.D) and 1 or 0)
+        - (UserInputService:IsKeyDown(Enum.KeyCode.A) and 1 or 0)
+
+    return forward, right
+end
 
 local function setupCharacter(character)
+    activeCharacter = character
     humanoid = character:WaitForChild("Humanoid")
     root = character:WaitForChild("HumanoidRootPart")
 
-    humanoid.AutoRotate = false
-    humanoid.WalkSpeed = WALK_SPEED
+    targetValue = character:FindFirstChild("LockOnTarget")
+    if not targetValue then
+        targetValue = Instance.new("ObjectValue")
+        targetValue.Name = "LockOnTarget"
+        targetValue.Parent = character
+    end
 end
 
 player.CharacterAdded:Connect(setupCharacter)
-
-if player.Character then
-    setupCharacter(player.Character)
-end
-
-local function handleMovement(actionName, inputState)
-    local pressed = inputState == Enum.UserInputState.Begin
-
-    if inputState ~= Enum.UserInputState.Begin
-        and inputState ~= Enum.UserInputState.End
-        and inputState ~= Enum.UserInputState.Cancel then
-        return Enum.ContextActionResult.Pass
-    end
-
-    input[actionName] = pressed
-
-    return Enum.ContextActionResult.Sink
-end
-
-ContextActionService:BindActionAtPriority(
-    "Forward",
-    handleMovement,
-    false,
-    3000,
-    Enum.KeyCode.W
-)
-
-ContextActionService:BindActionAtPriority(
-    "Backward",
-    handleMovement,
-    false,
-    3000,
-    Enum.KeyCode.S
-)
-
-ContextActionService:BindActionAtPriority(
-    "Left",
-    handleMovement,
-    false,
-    3000,
-    Enum.KeyCode.A
-)
-
-ContextActionService:BindActionAtPriority(
-    "Right",
-    handleMovement,
-    false,
-    3000,
-    Enum.KeyCode.D
-)
+if player.Character then setupCharacter(player.Character) end
 
 RunService:BindToRenderStep(
     "CombatMovement",
-    Enum.RenderPriority.Input.Value + 1,
+    Enum.RenderPriority.Character.Value + 1,
     function()
-        if not humanoid or not root or humanoid.Health <= 0 then
+        if not humanoid or not humanoid.Parent
+            or not root or not root.Parent
+            or humanoid.Health <= 0 then
             return
         end
 
-        local targetRoot = dummy:FindFirstChild("HumanoidRootPart")
+        local target = getTarget()
+        local rolling = activeCharacter
+            and activeCharacter:GetAttribute("IsRolling")
 
-        if not targetRoot then
+        if rolling then
             humanoid:Move(Vector3.zero, false)
             return
         end
 
-        local offset = targetRoot.Position - root.Position
+        -- Sem alvo: nao interferir no movimento padrao.
+        if not target then return end
+
+        local offset = target.Position - root.Position
         local forward = Vector3.new(offset.X, 0, offset.Z)
 
         if forward.Magnitude < DEADZONE then
@@ -108,23 +93,15 @@ RunService:BindToRenderStep(
 
         forward = forward.Unit
         local right = forward:Cross(Vector3.yAxis).Unit
+        local forwardInput, rightInput = getInput()
 
-        local forwardInput =
-            (input.Forward and 1 or 0)
-            - (input.Backward and 1 or 0)
+        local direction =
+            forward * forwardInput + right * rightInput
 
-        local rightInput =
-            (input.Right and 1 or 0)
-            - (input.Left and 1 or 0)
-
-        local moveDirection =
-            forward * forwardInput
-            + right * rightInput
-
-        if moveDirection.Magnitude > 1 then
-            moveDirection = moveDirection.Unit
+        if direction.Magnitude > 1 then
+            direction = direction.Unit
         end
 
-        humanoid:Move(moveDirection, false)
+        humanoid:Move(direction, false)
     end
 )

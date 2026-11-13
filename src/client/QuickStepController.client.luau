@@ -1,9 +1,15 @@
 
 -- QuickStepController.client.luau
--- Shift + WASD: Quick Dash
--- Duplo toque A/D: Quick Roll
+-- Shift rapido + WASD: Quick Dash
+-- Shift mantido + A/D: Quick Roll
 -- Com Lock-On: movimento orbital
 -- Sem Lock-On: movimento direcional
+--
+-- Stamina:
+-- Maximo: 100
+-- Dash: 20
+-- Roll: 40
+-- Regeneracao: +20 a cada 5 segundos
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -28,12 +34,21 @@ local ROLL_DISTANCE = 14
 local ROLL_COOLDOWN = 0.35
 local ROLL_FALLBACK_DURATION = 0.65
 
-local DOUBLE_TAP_WINDOW = 0.30
+-- Tempo necessario para ativar Roll.
+local ROLL_HOLD_DURATION = 0.25
 
 local ANIMATION_FADE = 0.04
 local COLLISION_MARGIN = 1.5
 
 local LOCK_ON_VALUE_NAME = "LockOnTarget"
+
+-- STAMINA
+local STAMINA_MAX = 100
+local DASH_COST = 20
+local ROLL_COST = 40
+
+local STAMINA_REGEN_DELAY = 5.0
+local STAMINA_REGEN_AMOUNT = 20
 
 local DIRECTIONS = {
     [Enum.KeyCode.W] = Vector3.new(0, 0, -1),
@@ -78,21 +93,75 @@ local rolling = false
 local lastStep = -math.huge
 local lastRoll = -math.huge
 
-local lastTap = {
-    [Enum.KeyCode.A] = -math.huge,
-    [Enum.KeyCode.D] = -math.huge,
-}
-
-local released = {
-    [Enum.KeyCode.A] = true,
-    [Enum.KeyCode.D] = true,
-}
-
 local movementConnection = nil
 local actionId = 0
 
 local savedWalkSpeed = nil
 local savedAutoRotate = nil
+
+-- Controle de Shift.
+local shiftPressedAt = nil
+local shiftActionId = 0
+local shiftRollTriggered = false
+local shiftPreferredKey = nil
+
+-- ==========================================
+-- STAMINA
+-- ==========================================
+
+local stamina = STAMINA_MAX
+local lastStaminaUse = os.clock()
+
+local function updateStamina()
+    player:SetAttribute("QuickStepStamina", stamina)
+end
+
+local function canSpendStamina(cost)
+    return stamina >= cost
+end
+
+local function spendStamina(cost)
+    if not canSpendStamina(cost) then
+        return false
+    end
+
+    stamina -= cost
+    lastStaminaUse = os.clock()
+
+    updateStamina()
+
+    print(
+        "[Stamina] Consumo:",
+        cost,
+        "| Restante:",
+        stamina
+    )
+
+    return true
+end
+
+-- Regeneracao em segmentos inteiros.
+RunService.Heartbeat:Connect(function()
+    if stamina >= STAMINA_MAX then
+        return
+    end
+
+    local now = os.clock()
+
+    if now - lastStaminaUse < STAMINA_REGEN_DELAY then
+        return
+    end
+
+    stamina = math.min(
+        STAMINA_MAX,
+        stamina + STAMINA_REGEN_AMOUNT
+    )
+
+    lastStaminaUse = now
+    updateStamina()
+
+    print("[Stamina] Regenerada:", stamina)
+end)
 
 -- ==========================================
 -- UTILITARIOS
@@ -103,7 +172,6 @@ local function flatten(vector)
 end
 
 local function movementCurve(t)
-    -- Ease-out: inicio rapido, final suave.
     return 1 - (1 - t) ^ 2
 end
 
@@ -112,9 +180,28 @@ local function shiftHeld()
         or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
 end
 
-local function resetDoubleTap()
-    lastTap[Enum.KeyCode.A] = -math.huge
-    lastTap[Enum.KeyCode.D] = -math.huge
+local function isShiftKey(key)
+    return key == Enum.KeyCode.LeftShift
+        or key == Enum.KeyCode.RightShift
+end
+
+local function getHeldDirectionKey()
+    -- Prioriza direcoes laterais para Roll.
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+        return Enum.KeyCode.A
+    end
+
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+        return Enum.KeyCode.D
+    end
+
+    for _, key in ipairs(KEY_ORDER) do
+        if UserInputService:IsKeyDown(key) then
+            return key
+        end
+    end
+
+    return Enum.KeyCode.W
 end
 
 local function getTargetRoot(target)
@@ -304,6 +391,32 @@ local function getDirection(preferredKey)
 end
 
 -- ==========================================
+-- POSTURA DO DASH LATERAL
+-- ==========================================
+
+local function getLateralFacing(targetRoot)
+    if not root then
+        return nil
+    end
+
+    local facing
+
+    if targetRoot and targetRoot.Parent then
+        facing = flatten(targetRoot.Position - root.Position)
+    else
+        local camera = workspace.CurrentCamera
+        facing = camera and flatten(camera.CFrame.LookVector)
+            or flatten(root.CFrame.LookVector)
+    end
+
+    if facing.Magnitude < 0.01 then
+        return nil
+    end
+
+    return facing.Unit
+end
+
+-- ==========================================
 -- COLISAO
 -- ==========================================
 
@@ -349,39 +462,99 @@ end
 local function executeMovement(isRoll, preferredKey)
     if stepping then
         print("[QuickStep] Movimento bloqueado: outro ativo")
-        return
+        return false
     end
 
     if not humanoid or not root then
-        return
+        return false
     end
 
     if humanoid.Health <= 0 then
-        return
+        return false
     end
 
     local direction, selectedKey = getDirection(preferredKey)
 
     if not direction then
-        return
+        return false
+    end
+
+    -- Com Lock-On, W avanca e S recua em relacao ao alvo.
+    -- Sem Lock-On, mantem a escolha anterior: W/S fazem Dash frontal.
+    if not isRoll and (
+        selectedKey == Enum.KeyCode.W
+        or selectedKey == Enum.KeyCode.S
+    ) then
+        local target = getLockOnTarget()
+        local forward
+
+        if target then
+            forward = flatten(target.Position - root.Position)
+            if forward.Magnitude < 0.01 then
+                forward = flatten(root.CFrame.LookVector)
+            end
+            -- Mantem W e S distintos durante o Lock-On.
+        else
+            forward = flatten(root.CFrame.LookVector)
+        end
+
+        if forward.Magnitude < 0.01 then
+            return false
+        end
+
+        if target then
+            direction = selectedKey == Enum.KeyCode.S
+                and -forward.Unit or forward.Unit
+        else
+            direction = forward.Unit
+            selectedKey = Enum.KeyCode.W
+        end
+    end
+
+    -- Corrige a postura ANTES de calcular a trajetoria lateral.
+    -- Com Lock-On: olha para o oponente.
+    -- Sem Lock-On: olha na direcao horizontal da camera.
+    local isLateral =
+        selectedKey == Enum.KeyCode.A
+        or selectedKey == Enum.KeyCode.D
+
+    local lateralTarget = isLateral and getLockOnTarget() or nil
+    local lateralFacing = isLateral and getLateralFacing(lateralTarget) or nil
+
+    if isLateral and lateralFacing then
+        local lateralRight = lateralFacing:Cross(Vector3.yAxis).Unit
+        direction = selectedKey == Enum.KeyCode.D
+            and lateralRight or -lateralRight
     end
 
     if isRoll
         and selectedKey ~= Enum.KeyCode.A
         and selectedKey ~= Enum.KeyCode.D then
-        return
+        return false
     end
 
     local now = os.clock()
 
+    local staminaCost = isRoll and ROLL_COST or DASH_COST
+
+    if not canSpendStamina(staminaCost) then
+        print(
+            "[QuickStep] Stamina insuficiente:",
+            stamina,
+            "/",
+            staminaCost
+        )
+        return false
+    end
+
     if isRoll then
         if now - lastRoll < ROLL_COOLDOWN then
             print("[Roll] Cooldown ativo")
-            return
+            return false
         end
     else
         if now - lastStep < STEP_COOLDOWN then
-            return
+            return false
         end
     end
 
@@ -394,7 +567,20 @@ local function executeMovement(isRoll, preferredKey)
     end
 
     if not animationName then
-        return
+        return false
+    end
+
+    if not spendStamina(staminaCost) then
+        return false
+    end
+
+    -- Ajusta a orientacao no inicio da acao, sem gastar stamina
+    -- nem mudar a postura quando a acao foi recusada.
+    if isLateral and lateralFacing then
+        root.CFrame = CFrame.lookAt(
+            root.Position,
+            root.Position + lateralFacing
+        )
     end
 
     stepping = true
@@ -436,11 +622,7 @@ local function executeMovement(isRoll, preferredKey)
     end
 
     -- Apenas movimentos laterais orbitam.
-    local isLateral =
-        selectedKey == Enum.KeyCode.A
-        or selectedKey == Enum.KeyCode.D
-
-    local targetRoot = isLateral and getLockOnTarget() or nil
+    local targetRoot = lateralTarget
 
     local orbital = false
     local orbitOffset = nil
@@ -485,7 +667,8 @@ local function executeMovement(isRoll, preferredKey)
         isRoll and "[Roll] INICIO" or "[Dash] INICIO",
         "| Animacao:", animationName,
         "| Orbital:", orbital,
-        "| Distancia:", distance
+        "| Distancia:", distance,
+        "| Stamina:", stamina
     )
 
     movementConnection = RunService.Heartbeat:Connect(function(dt)
@@ -561,7 +744,26 @@ local function executeMovement(isRoll, preferredKey)
                     displacement,
                     rayParams
                 ) then
-                    currentRoot.CFrame += displacement
+                    local newPosition = currentRoot.Position + displacement
+
+                    if isLateral then
+                        -- Mantem a postura frontal durante o Dash lateral.
+                        local facing = getLateralFacing(
+                            getLockOnTarget()
+                        ) or lateralFacing
+
+                        if facing then
+                            currentRoot.CFrame = CFrame.lookAt(
+                                newPosition,
+                                newPosition + facing
+                            )
+                        else
+                            currentRoot.CFrame += displacement
+                        end
+                    else
+                        currentRoot.CFrame += displacement
+                    end
+
                     traveled = targetDistance
                 else
                     blocked = true
@@ -577,6 +779,99 @@ local function executeMovement(isRoll, preferredKey)
             )
         end
     end)
+
+    return true
+end
+
+-- ==========================================
+-- CONTROLE DO SHIFT
+-- ==========================================
+
+local function resetShiftAction()
+    shiftActionId += 1
+    shiftPressedAt = nil
+    shiftRollTriggered = false
+    shiftPreferredKey = nil
+end
+
+local function beginShiftAction()
+    if shiftPressedAt ~= nil then
+        return
+    end
+
+    if UserInputService:GetFocusedTextBox() then
+        return
+    end
+
+    shiftPressedAt = os.clock()
+    shiftRollTriggered = false
+    shiftPreferredKey = getHeldDirectionKey()
+
+    shiftActionId += 1
+    local thisShiftAction = shiftActionId
+
+    -- Aguarda o tempo de segurada para decidir
+    -- se deve executar um Roll.
+    task.delay(ROLL_HOLD_DURATION, function()
+        if thisShiftAction ~= shiftActionId then
+            return
+        end
+
+        if shiftPressedAt == nil or not shiftHeld() then
+            return
+        end
+
+        if UserInputService:GetFocusedTextBox() then
+            return
+        end
+
+        local key = getHeldDirectionKey()
+
+        -- Roll so existe nas direcoes laterais.
+        if key ~= Enum.KeyCode.A
+            and key ~= Enum.KeyCode.D then
+            return
+        end
+
+        -- Marca a tentativa para impedir Dash
+        -- quando Shift for solto.
+        shiftRollTriggered = true
+
+        executeMovement(true, key)
+    end)
+end
+
+local function endShiftAction()
+    if shiftPressedAt == nil then
+        return
+    end
+
+    local heldDuration = os.clock() - shiftPressedAt
+    local rollTriggered = shiftRollTriggered
+    local preferredKey = shiftPreferredKey
+
+    resetShiftAction()
+
+    if UserInputService:GetFocusedTextBox() then
+        return
+    end
+
+    -- Toque rapido: Dash.
+    if heldDuration < ROLL_HOLD_DURATION then
+        executeMovement(false, preferredKey)
+        return
+    end
+
+    -- Shift mantido com W/S: Dash ao soltar.
+    -- Shift mantido com A/D: Roll ja foi tentado.
+    if not rollTriggered then
+        local key = preferredKey
+
+        if key == Enum.KeyCode.W
+            or key == Enum.KeyCode.S then
+            executeMovement(false, key)
+        end
+    end
 end
 
 -- ==========================================
@@ -586,65 +881,27 @@ end
 UserInputService.InputBegan:Connect(function(input, processed)
     local key = input.KeyCode
 
-    -- A/D sao detectados mesmo com processed = true.
-    -- Isso e necessario porque o Roblox ja usa
-    -- essas teclas para movimentacao padrao.
-    if key == Enum.KeyCode.A or key == Enum.KeyCode.D then
-        if not released[key] then
+    -- Shift controla Dash e Roll.
+    if isShiftKey(key) then
+        if processed then
             return
         end
 
-        released[key] = false
-
-        -- Impede ativacao enquanto digita no chat.
-        if UserInputService:GetFocusedTextBox() then
-            lastTap[key] = -math.huge
-            return
-        end
-
-        -- Shift + A/D nao conta como Roll.
-        if shiftHeld() then
-            lastTap[key] = -math.huge
-            return
-        end
-
-        local now = os.clock()
-        local interval = now - lastTap[key]
-
-        print("[DoubleTap]", key.Name, "Intervalo:", interval)
-
-        if interval <= DOUBLE_TAP_WINDOW then
-            lastTap[key] = -math.huge
-
-            print("[DoubleTap] ROLL DETECTADO:", key.Name)
-
-            executeMovement(true, key)
-        else
-            lastTap[key] = now
-        end
-
-        return
-    end
-
-    -- Outros inputs continuam respeitando processed.
-    if processed then
-        return
-    end
-
-    -- Shift + WASD = Dash.
-    if key == Enum.KeyCode.LeftShift
-        or key == Enum.KeyCode.RightShift then
-
-        resetDoubleTap()
-        executeMovement(false)
+        beginShiftAction()
     end
 end)
 
 UserInputService.InputEnded:Connect(function(input)
     local key = input.KeyCode
 
-    if released[key] ~= nil then
-        released[key] = true
+    if isShiftKey(key) then
+        -- Se o outro Shift continuar pressionado,
+        -- a acao permanece ativa.
+        if shiftHeld() then
+            return
+        end
+
+        endShiftAction()
     end
 end)
 
@@ -653,6 +910,7 @@ end)
 -- ==========================================
 
 local function setupCharacter(character)
+    resetShiftAction()
     cancelMovement()
 
     for _, track in pairs(animationTracks) do
@@ -663,13 +921,14 @@ local function setupCharacter(character)
     animationTracks = {}
 
     activeCharacter = character
+
+    -- Reinicia stamina ao renascer.
+    stamina = STAMINA_MAX
+    lastStaminaUse = os.clock()
+    updateStamina()
+
     lastStep = -math.huge
     lastRoll = -math.huge
-
-    resetDoubleTap()
-
-    released[Enum.KeyCode.A] = true
-    released[Enum.KeyCode.D] = true
 
     humanoid = character:WaitForChild("Humanoid")
     root = character:WaitForChild("HumanoidRootPart")
