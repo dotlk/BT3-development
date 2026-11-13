@@ -1,8 +1,8 @@
 
 -- CombatCamera.client.luau
--- V alterna Lock-On, inicialmente desligado.
--- Alvo deve estar na frente da camera e a no maximo 40 studs.
--- Em primeira pessoa, PlayerCamera controla camera e postura.
+-- V alterna Lock-On.
+-- Lock-On nao funciona durante primeira pessoa.
+-- Alcance maximo de 40 studs.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -10,10 +10,6 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
-
--- ==========================================
--- CONFIGURACOES
--- ==========================================
 
 local LOCK_ON_KEY = Enum.KeyCode.V
 local MAX_TARGET_DISTANCE = 40
@@ -30,10 +26,6 @@ local FOCUS_HEIGHT = 2.5
 local SMOOTHNESS = 7
 local ROTATION_SMOOTHNESS = 12
 
--- ==========================================
--- ESTADO
--- ==========================================
-
 local activeCharacter
 local humanoid
 local root
@@ -44,9 +36,10 @@ local lockOnEnabled = false
 local currentDistance = MIN_DISTANCE
 local lastDirection = Vector3.new(0, 0, -1)
 
--- ==========================================
--- ALVOS
--- ==========================================
+local function isFirstPerson()
+    return activeCharacter ~= nil
+        and activeCharacter:GetAttribute("IsFirstPerson") == true
+end
 
 local function getTargetRoot(model)
     local targetHumanoid =
@@ -59,7 +52,6 @@ local function getTargetRoot(model)
         or targetHumanoid.Health <= 0
         or not targetRoot
         or not targetRoot:IsA("BasePart") then
-
         return nil
     end
 
@@ -71,7 +63,6 @@ local function isValidTarget(targetRoot)
         or not root.Parent
         or not targetRoot
         or not targetRoot.Parent then
-
         return false
     end
 
@@ -99,10 +90,8 @@ local function findTarget()
     end
 
     local cameraForward = camera.CFrame.LookVector
-
     local bestTarget = nil
     local bestScore = math.huge
-
     local maxAngle = math.rad(MAX_TARGET_ANGLE)
 
     for _, model in ipairs(Workspace:GetDescendants()) do
@@ -145,15 +134,6 @@ local function findTarget()
     return bestTarget
 end
 
--- ==========================================
--- LOCK-ON
--- ==========================================
-
-local function isFirstPerson()
-    return activeCharacter ~= nil
-        and activeCharacter:GetAttribute("IsFirstPerson") == true
-end
-
 local function disableLockOn()
     lockOnEnabled = false
     lockedTarget = nil
@@ -178,13 +158,16 @@ local function disableLockOn()
             activeCharacter
             and activeCharacter:GetAttribute("IsRolling")
         ) then
-
-        -- Primeira pessoa exige rotacao manual pelo PlayerCamera.
         humanoid.AutoRotate = not isFirstPerson()
     end
 end
 
 local function enableLockOn(target)
+    -- Bloqueia Lock-On durante primeira pessoa.
+    if isFirstPerson() then
+        return
+    end
+
     if not isValidTarget(target) then
         return
     end
@@ -203,12 +186,17 @@ local function enableLockOn(target)
     end
 end
 
--- ==========================================
--- INPUT
--- ==========================================
-
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed or input.KeyCode ~= LOCK_ON_KEY then
+        return
+    end
+
+    if UserInputService:GetFocusedTextBox() then
+        return
+    end
+
+    -- V nao faz nada enquanto primeira pessoa estiver ativa.
+    if isFirstPerson() then
         return
     end
 
@@ -222,10 +210,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
         end
     end
 end)
-
--- ==========================================
--- PERSONAGEM
--- ==========================================
 
 local function setupCharacter(character)
     disableLockOn()
@@ -244,7 +228,6 @@ local function setupCharacter(character)
     end
 
     targetValue.Value = nil
-
     humanoid.AutoRotate = true
 end
 
@@ -254,15 +237,17 @@ if player.Character then
     setupCharacter(player.Character)
 end
 
--- ==========================================
--- CAMERA DE COMBATE
--- ==========================================
-
 RunService:BindToRenderStep(
     "CombatCamera",
     Enum.RenderPriority.Camera.Value + 1,
     function(dt)
         if not lockOnEnabled then
+            return
+        end
+
+        -- Desliga Lock-On ao entrar em primeira pessoa.
+        if isFirstPerson() then
+            disableLockOn()
             return
         end
 
@@ -278,7 +263,6 @@ RunService:BindToRenderStep(
             return
         end
 
-        -- Desliga ao ultrapassar 40 studs.
         if not isValidTarget(lockedTarget) then
             disableLockOn()
             return
@@ -286,11 +270,9 @@ RunService:BindToRenderStep(
 
         if targetValue
             and targetValue.Value ~= lockedTarget then
-
             targetValue.Value = lockedTarget
         end
 
-        -- Em primeira pessoa, PlayerCamera tambem usa Scriptable.
         camera.CameraType = Enum.CameraType.Scriptable
 
         if not activeCharacter:GetAttribute("IsRolling") then
@@ -336,23 +318,18 @@ RunService:BindToRenderStep(
             playerPos:Lerp(targetPos, 0.35)
             + Vector3.new(0, FOCUS_HEIGHT, 0)
 
-        -- PlayerCamera assume a camera em primeira pessoa.
-        if not isFirstPerson() then
-            local desiredCFrame = CFrame.lookAt(
-                cameraPos,
-                focusPos
-            )
+        local desiredCFrame = CFrame.lookAt(
+            cameraPos,
+            focusPos
+        )
 
-            camera.CFrame = camera.CFrame:Lerp(
-                desiredCFrame,
-                alpha
-            )
-        end
+        camera.CFrame = camera.CFrame:Lerp(
+            desiredCFrame,
+            alpha
+        )
 
-        -- Nao disputar a rotacao com Roll ou PlayerCamera.
-        if activeCharacter:GetAttribute("IsRolling")
-            or isFirstPerson() then
-
+        -- QuickStep controla a rotacao durante Roll.
+        if activeCharacter:GetAttribute("IsRolling") then
             return
         end
 
@@ -367,5 +344,3 @@ RunService:BindToRenderStep(
         )
     end
 )
-
-print("[CombatCamera] Sistema carregado")

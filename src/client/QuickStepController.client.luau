@@ -27,6 +27,7 @@ local AnimationData = require(
 -- ==========================================
 
 local STEP_DISTANCE = 5
+local SPRINT_DISTANCE_MULTIPLIER = 2
 local STEP_DURATION = 0.15
 local STEP_COOLDOWN = 0.25
 
@@ -603,6 +604,11 @@ local function executeMovement(isRoll, preferredKey)
     local duration = STEP_DURATION
     local distance = STEP_DISTANCE
 
+    -- Captura o estado de corrida uma unica vez no inicio da acao.
+    local sprintBoost = character
+        and character:GetAttribute("IsSprinting") == true
+        and SPRINT_DISTANCE_MULTIPLIER or 1
+
     if isRoll then
         distance = ROLL_DISTANCE
 
@@ -620,6 +626,8 @@ local function executeMovement(isRoll, preferredKey)
     else
         setRolling(false)
     end
+
+    distance *= sprintBoost
 
     -- Apenas movimentos laterais orbitam.
     local targetRoot = lateralTarget

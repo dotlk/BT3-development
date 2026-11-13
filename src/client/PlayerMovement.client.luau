@@ -42,8 +42,15 @@ local function hasLockOn()
         and targetValue.Value ~= nil
 end
 
+local function setSprint(value)
+    sprinting = value
+    if activeCharacter then
+        activeCharacter:SetAttribute("IsSprinting", value)
+    end
+end
+
 local function stopSprint()
-    sprinting = false
+    setSprint(false)
 end
 
 UserInputService.InputBegan:Connect(function(input, processed)
@@ -60,7 +67,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 
     if previous and now - previous <= DOUBLE_TAP_WINDOW then
         if not hasLockOn() then
-            sprinting = true
+            setSprint(true)
         end
         lastTap[key] = nil
     end
