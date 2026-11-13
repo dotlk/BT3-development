@@ -1,90 +1,99 @@
+
 -- CombatCamera
--- Câmera de combate inspirada no Budokai Tenkaichi 3
+-- Camera terrestre com lock-on dinamico
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
-local camera = Workspace.CurrentCamera
 local dummy = Workspace:WaitForChild("TrainingDummy")
 
-local DISTANCE = 13
+local MIN_DISTANCE = 12
+local MAX_DISTANCE = 30
+local BASE_DISTANCE = 10
+local DISTANCE_PER_STUD = 0.55
 local HEIGHT = 5
-local SMOOTHNESS = 10
+local FOCUS_HEIGHT = 2.5
+local SMOOTHNESS = 7
+local ROTATION_SMOOTHNESS = 12
 
-local character
-local root
+local root = nil
+local currentDistance = MIN_DISTANCE
+local lastDirection = Vector3.new(0, 0, -1)
 
-local function setupCharacter(newCharacter)
-	character = newCharacter
-	root = character:WaitForChild("HumanoidRootPart")
-
-	local humanoid = character:WaitForChild("Humanoid")
-	humanoid.AutoRotate = false
+local function setupCharacter(character)
+    root = character:WaitForChild("HumanoidRootPart")
+    local humanoid = character:WaitForChild("Humanoid")
+    humanoid.AutoRotate = false
 end
 
 player.CharacterAdded:Connect(setupCharacter)
 
 if player.Character then
-	setupCharacter(player.Character)
+    setupCharacter(player.Character)
 end
 
-camera.CameraType = Enum.CameraType.Scriptable
-
 RunService:BindToRenderStep(
-	"CombatCamera",
-	Enum.RenderPriority.Camera.Value + 1,
-	function(dt)
-		if not root or not root.Parent then
-			return
-		end
+    "CombatCamera",
+    Enum.RenderPriority.Camera.Value + 1,
+    function(dt)
+        local camera = Workspace.CurrentCamera
+        local targetRoot = dummy:FindFirstChild("HumanoidRootPart")
 
-		local targetRoot = dummy:FindFirstChild("HumanoidRootPart")
+        if not root or not root.Parent or not targetRoot then
+            return
+        end
 
-		if not targetRoot then
-			return
-		end
+        camera.CameraType = Enum.CameraType.Scriptable
 
-		local playerPos = root.Position
-		local targetPos = targetRoot.Position
+        local playerPos = root.Position
+        local targetPos = targetRoot.Position
 
-		local direction = targetPos - playerPos
-		direction = Vector3.new(direction.X, 0, direction.Z)
+        local offset = targetPos - playerPos
+        local flatOffset = Vector3.new(offset.X, 0, offset.Z)
+        local separation = flatOffset.Magnitude
 
-		if direction.Magnitude < 0.01 then
-			return
-		end
+        if separation > 0.05 then
+            lastDirection = flatOffset.Unit
+        end
 
-		direction = direction.Unit
+        local desiredDistance = math.clamp(
+            BASE_DISTANCE + separation * DISTANCE_PER_STUD,
+            MIN_DISTANCE,
+            MAX_DISTANCE
+        )
 
-		-- Posiciona a câmera atrás do personagem
-		local cameraPos =
-			playerPos
-		- direction * DISTANCE
-			+ Vector3.new(0, HEIGHT, 0)
+        local alpha = 1 - math.exp(-SMOOTHNESS * dt)
+        local rotationAlpha = 1 - math.exp(-ROTATION_SMOOTHNESS * dt)
 
-		-- Olha para o espaço entre os combatentes
-		local focusPos =
-			playerPos:Lerp(targetPos, 0.35)
-			+ Vector3.new(0, 2.5, 0)
+        currentDistance +=
+            (desiredDistance - currentDistance) * alpha
 
-		local desiredCFrame = CFrame.lookAt(
-			cameraPos,
-			focusPos
-		)
+        local cameraPos =
+            playerPos
+            - lastDirection * currentDistance
+            + Vector3.new(0, HEIGHT, 0)
 
-		local alpha = 1 - math.exp(-SMOOTHNESS * dt)
+        local focusPos =
+            playerPos:Lerp(targetPos, 0.35)
+            + Vector3.new(0, FOCUS_HEIGHT, 0)
 
-		camera.CFrame = camera.CFrame:Lerp(
-			desiredCFrame,
-			alpha
-		)
+        local desiredCFrame = CFrame.lookAt(cameraPos, focusPos)
 
-		-- Mantém o personagem olhando para o adversário
-		root.CFrame = CFrame.lookAt(
-			playerPos,
-			playerPos + direction
-		)
-	end
+        camera.CFrame = camera.CFrame:Lerp(
+            desiredCFrame,
+            alpha
+        )
+
+        local desiredRootCFrame = CFrame.lookAt(
+            playerPos,
+            playerPos + lastDirection
+        )
+
+        root.CFrame = root.CFrame:Lerp(
+            desiredRootCFrame,
+            rotationAlpha
+        )
+    end
 )
