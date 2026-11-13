@@ -2,6 +2,7 @@
 -- CombatHit.luau
 -- Resolucao de acertos, Hitstun, Knockback e Hitstop
 -- Reacoes com pose inicial de impacto
+-- Suporte ao HeavyPunch
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ContentProvider = game:GetService("ContentProvider")
@@ -33,6 +34,7 @@ local HIT_ANIMATIONS = {
     Punch2 = "Hit1",
     Punch3 = "Hit2",
     Finisher4 = "Knockback1",
+    HeavyPunch = "Hit2",
 }
 
 local reactionStates = setmetatable({}, {

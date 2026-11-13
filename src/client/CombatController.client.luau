@@ -1,86 +1,149 @@
 
 -- CombatController.client.luau
--- Combo de quatro golpes, confirmacao de impacto e Hitstop
--- Integracao com Roll por meio do atributo IsRolling
+-- Combo normal + Heavy Melee carregavel
+-- Hitstop e pausa estilizada na pose final do HeavyPunch
 
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
-local shared = ReplicatedStorage:WaitForChild("Shared")
-local attackEvent = ReplicatedStorage:WaitForChild("CombatAttack")
-local hitstopEvent = ReplicatedStorage:WaitForChild("CombatHitstop")
+local shared = RS:WaitForChild("Shared")
 
 local StateMachine = require(shared:WaitForChild("StateMachine"))
 local AnimationData = require(shared:WaitForChild("AnimationData"))
+
+local attackEvent = RS:WaitForChild("CombatAttack")
+local hitstopEvent = RS:WaitForChild("CombatHitstop")
+local heavyEvent = RS:WaitForChild("CombatHeavyCharge")
 
 -- ==========================================
 -- CONFIGURACOES
 -- ==========================================
 
 local FIRST_ATTACK = "Punch1"
-local DEFAULT_ATTACK_DURATION = 0.4
-local MIN_ATTACK_DURATION = 0.15
+local DEFAULT_DURATION = 0.4
+
 local RECOVERY_NORMAL = 0.15
 local RECOVERY_FINISHER = 0.60
+
 local COMBO_WINDOW_START = 0.25
 local COMBO_TRANSITION = 0.75
-local HIT_CONFIRM_TIMEOUT = 0.60
-local END_POSE_MARGIN = 0.02
+local HIT_TIMEOUT = 0.60
+
+-- Pausa estilizada do HeavyPunch
+local HEAVY_END_FREEZE_AT = 0.90
+local HEAVY_END_FREEZE_DURATION = 0.18
+
+local heavyConfig = AnimationData.Heavy
+local fighter = StateMachine.new()
 
 -- ==========================================
 -- ESTADO
 -- ==========================================
 
-local fighter = StateMachine.new()
+local humanoid
+local tracks = {}
 
-local humanoid = nil
-local attackTracks = {}
-
-local currentAttack = nil
+local currentAttack
+local queuedAttack
 local attackStartedAt = 0
 local attackDuration = 0
-local queuedAttack = nil
 local attackSequence = 0
 
 local hitRequested = false
-local hitResponse = nil
 local hitResolved = false
+local hitResponse
 local hitRequestedAt = 0
 
-local hitstopStartedAt = nil
+local hitstopStartedAt
 local hitstopEndsAt = 0
 local totalPausedTime = 0
 
+local mouseHeld = false
+local mousePressedAt = 0
+local mouseToken = 0
+
+local heavyPhase = nil
+local heavyStartedAt = 0
+local heavyCharge = 0
+local heavyChargeId = 0
+
+-- Estado da pausa final do HeavyPunch
+local heavyEndFreezeStartedAt = nil
+local heavyEndFreezeEndsAt = 0
+local heavyEndFreezeDone = false
+local totalHeavyEndPausedTime = 0
+
 -- ==========================================
--- INTEGRACAO COM MOVIMENTACAO
+-- PERSONAGEM
 -- ==========================================
+
+local function character()
+    return player.Character
+end
 
 local function isRolling()
-    local character = player.Character
+    local c = character()
 
-    return character ~= nil
-        and character:GetAttribute("IsRolling") == true
+    return c
+        and c:GetAttribute("IsRolling") == true
+end
+
+local function isStunned()
+    local c = character()
+
+    return c
+        and c:GetAttribute("CombatStunned") == true
+end
+
+local function canAct()
+    return humanoid
+        and humanoid.Health > 0
+        and not isRolling()
+        and not isStunned()
+end
+
+local function setHeavyAttributes(active, charge)
+    local c = character()
+    if not c then return end
+
+    c:SetAttribute("HeavyCharging", active)
+    c:SetAttribute("HeavyCharge", charge)
 end
 
 -- ==========================================
--- TEMPO DO ATAQUE
+-- ANIMACOES
 -- ==========================================
 
-local function getAttackElapsed()
-    local paused = totalPausedTime
+local function stopTrack(name, fade)
+    local track = tracks[name]
 
-    if hitstopStartedAt then
-        paused += os.clock() - hitstopStartedAt
+    if track and track.IsPlaying then
+        track:Stop(fade or 0.05)
     end
-
-    return math.max(
-        0,
-        os.clock() - attackStartedAt - paused
-    )
 end
+
+local function playTrack(name, fade)
+    local track = tracks[name]
+    if not track then return nil end
+
+    local data = AnimationData.Combat[name]
+        or AnimationData.HeavyAnimations[name]
+
+    if not data then return nil end
+
+    track:Stop(0)
+    track:Play(fade or 0.05)
+    track:AdjustSpeed(data.Speed or 1)
+
+    return track
+end
+
+-- ==========================================
+-- CONTROLE DE TEMPO
+-- ==========================================
 
 local function clearHitstop()
     hitstopStartedAt = nil
@@ -88,114 +151,112 @@ local function clearHitstop()
     totalPausedTime = 0
 end
 
-local function printAnimationDurations(tracks, character)
-    local names = {
-        "Punch1",
-        "Punch2",
-        "Punch3",
-        "Finisher4",
-    }
+local function clearHeavyEndFreeze()
+    heavyEndFreezeStartedAt = nil
+    heavyEndFreezeEndsAt = 0
+    heavyEndFreezeDone = false
+    totalHeavyEndPausedTime = 0
+end
 
-    local deadline = os.clock() + 10
+local function getAttackElapsed()
+    local now = os.clock()
 
-    while os.clock() < deadline do
-        if player.Character ~= character then
-            return
-        end
+    local paused = totalPausedTime
+        + totalHeavyEndPausedTime
 
-        local ready = true
-
-        for _, name in ipairs(names) do
-            if not tracks[name] or tracks[name].Length <= 0 then
-                ready = false
-                break
-            end
-        end
-
-        if ready then
-            break
-        end
-
-        task.wait(0.1)
+    if hitstopStartedAt then
+        paused += now - hitstopStartedAt
     end
 
-    if player.Character ~= character then
-        return
+    if heavyEndFreezeStartedAt then
+        paused += now - heavyEndFreezeStartedAt
     end
 
-    print("========== ANIMATION DURATIONS ==========")
+    return math.max(
+        0,
+        now - attackStartedAt - paused
+    )
+end
 
-    for _, name in ipairs(names) do
-        local track = tracks[name]
-        local data = AnimationData.Combat[name]
+-- ==========================================
+-- HEAVY MELEE
+-- ==========================================
 
-        if track and data then
-            local speed = data.Speed or 1
+local function cancelHeavy(notifyServer)
+    if heavyPhase then
+        stopTrack("HeavyCharge")
+        stopTrack("HeavyHold")
 
-            print(
-                "[AnimationDuration]",
-                name,
-                "| Length:",
-                track.Length,
-                "| Effective:",
-                speed > 0 and track.Length / speed or 0
+        if notifyServer then
+            heavyEvent:FireServer(
+                "Cancel",
+                heavyChargeId
             )
         end
     end
 
-    print("=========================================")
+    heavyPhase = nil
+    heavyCharge = 0
+
+    setHeavyAttributes(false, 0)
+
+    if fighter:GetState() == "Block" then
+        fighter:ForceState("Idle")
+    end
 end
 
 -- ==========================================
--- PERSONAGEM
+-- SETUP DO PERSONAGEM
 -- ==========================================
 
-local function setupCharacter(character)
+local function setupCharacter(c)
     attackSequence += 1
+    mouseToken += 1
+    mouseHeld = false
 
+    cancelHeavy(false)
     fighter:ForceState("Idle")
 
     currentAttack = nil
     queuedAttack = nil
-    attackStartedAt = 0
-    attackDuration = 0
 
     hitRequested = false
     hitResolved = false
     hitResponse = nil
-    hitRequestedAt = 0
 
     clearHitstop()
+    clearHeavyEndFreeze()
 
-    for _, track in pairs(attackTracks) do
+    for _, track in pairs(tracks) do
         track:Stop(0)
         track:Destroy()
     end
 
-    attackTracks = {}
+    tracks = {}
 
-    humanoid = character:WaitForChild("Humanoid")
+    humanoid = c:WaitForChild("Humanoid")
     local animator = humanoid:WaitForChild("Animator")
 
-    for name, data in pairs(AnimationData.Combat) do
-        local animation = Instance.new("Animation")
-        animation.AnimationId = data.Id
+    local function loadSet(set)
+        for name, data in pairs(set) do
+            local animation = Instance.new("Animation")
+            animation.AnimationId = data.Id
 
-        local track = animator:LoadAnimation(animation)
+            local track = animator:LoadAnimation(animation)
 
-        track.Priority = data.Priority
-        track.Looped = data.Looped
+            track.Priority = data.Priority
+            track.Looped = data.Looped
 
-        attackTracks[name] = track
+            tracks[name] = track
 
-        animation:Destroy()
+            animation:Destroy()
+        end
     end
 
-    local loadedTracks = attackTracks
+    loadSet(AnimationData.Combat)
+    loadSet(AnimationData.HeavyAnimations)
 
-    task.spawn(function()
-        printAnimationDurations(loadedTracks, character)
-    end)
+    setHeavyAttributes(false, 0)
 
     print("[Combat] Animacoes carregadas")
 end
@@ -211,27 +272,25 @@ local function finishCombo(sequence)
 
     local lastAttack = currentAttack
 
-    queuedAttack = nil
     currentAttack = nil
+    queuedAttack = nil
 
     hitRequested = false
     hitResolved = false
     hitResponse = nil
 
     clearHitstop()
+    clearHeavyEndFreeze()
 
-    local recoveryDuration = RECOVERY_NORMAL
-    if lastAttack == "Finisher4" then
-        recoveryDuration = RECOVERY_FINISHER
-    end
+    local recovery = lastAttack == "Finisher4"
+        and RECOVERY_FINISHER
+        or RECOVERY_NORMAL
 
     if fighter:GetState() == "Attack" then
         fighter:Transition("Recovery")
     end
 
-    print("[Combat] Recovery iniciado:", recoveryDuration)
-
-    task.delay(recoveryDuration, function()
+    task.delay(recovery, function()
         if sequence ~= attackSequence then
             return
         end
@@ -239,36 +298,26 @@ local function finishCombo(sequence)
         if fighter:GetState() == "Recovery" then
             fighter:Transition("Idle")
         end
-
-        print("[Combat] Idle")
     end)
 end
 
 -- ==========================================
--- RESULTADO DO IMPACTO
+-- HITSTOP
 -- ==========================================
 
-local function applyHitResult(attackName, duration, confirmed)
-    if hitResolved or currentAttack ~= attackName then
+local function applyHitResult(name, duration, confirmed)
+    if hitResolved or currentAttack ~= name then
         return
     end
 
     hitResolved = true
 
-    if not confirmed then
-        print("[Combat] Golpe nao confirmado:", attackName)
+    if not confirmed or duration <= 0 or duration > 2 then
         return
     end
 
-    if duration <= 0 or duration > 2 then
-        return
-    end
-
-    local track = attackTracks[attackName]
-
-    if not track then
-        return
-    end
+    local track = tracks[name]
+    if not track then return end
 
     if not track.IsPlaying then
         track:Play(0, 1, 0)
@@ -276,66 +325,53 @@ local function applyHitResult(attackName, duration, confirmed)
         if track.Length > 0 then
             track.TimePosition = math.max(
                 0,
-                track.Length - END_POSE_MARGIN
+                track.Length - 0.02
             )
         end
     end
 
-    local now = os.clock()
-
-    hitstopStartedAt = now
-    hitstopEndsAt = now + duration
+    hitstopStartedAt = os.clock()
+    hitstopEndsAt = hitstopStartedAt + duration
 
     track:AdjustSpeed(0)
 
-    print(
-        "[Hitstop] INICIO:",
-        attackName,
-        "| Duracao:",
-        duration
-    )
+    print("[Hitstop] INICIO:", name)
 end
 
 -- ==========================================
 -- INICIO DO ATAQUE
 -- ==========================================
 
-local function startAttack(attackName)
-    -- Nao permite iniciar novos golpes durante o Roll.
-    if isRolling() then
-        return
+local function startAttack(name, heavyId)
+    if not canAct() then
+        return false
     end
 
-    local data = AnimationData.Combat[attackName]
-    local track = attackTracks[attackName]
+    local data = AnimationData.Combat[name]
+    local track = tracks[name]
 
     if not data or not track then
-        return
+        return false
     end
 
     local state = fighter:GetState()
 
     if state == "Idle" then
         if not fighter:Transition("Attack") then
-            return
+            return false
         end
     elseif state ~= "Attack" then
-        return
+        return false
     end
 
     attackSequence += 1
 
     if currentAttack then
-        local previousTrack = attackTracks[currentAttack]
-
-        if previousTrack then
-            previousTrack:Stop(0.08)
-        end
+        stopTrack(currentAttack, 0.08)
     end
 
-    currentAttack = attackName
+    currentAttack = name
     queuedAttack = nil
-
     attackStartedAt = os.clock()
 
     hitRequested = false
@@ -344,37 +380,174 @@ local function startAttack(attackName)
     hitRequestedAt = 0
 
     clearHitstop()
+    clearHeavyEndFreeze()
 
-    track:Stop(0)
-    track:Play(0.08)
-    track:AdjustSpeed(data.Speed or 1)
+    playTrack(name, 0.08)
 
     local duration = data.Duration or track.Length
 
     if duration <= 0 then
-        duration = DEFAULT_ATTACK_DURATION
+        duration = DEFAULT_DURATION
     end
 
     attackDuration = math.max(
-        duration / (data.Speed or 1),
-        MIN_ATTACK_DURATION
+        duration / math.max(data.Speed or 1, 0.01),
+        0.15
     )
 
-    -- Registra o inicio do ataque no servidor.
-    if humanoid and humanoid.Health > 0 then
-        attackEvent:FireServer(
-            attackName,
-            attackSequence,
-            attackDuration
-        )
+    attackEvent:FireServer(
+        name,
+        attackSequence,
+        attackDuration,
+        heavyId
+    )
+
+    print("[Combat] Ataque:", name)
+
+    return true
+end
+
+-- ==========================================
+-- PREPARACAO DO HEAVY
+-- ==========================================
+
+local function startHeavy()
+    if not canAct() then return end
+
+    if fighter:GetState() ~= "Idle" then
+        return
     end
 
-    print(
-        "[Combat] Ataque:",
-        attackName,
-        "#",
-        attackSequence
+    fighter:ForceState("Block")
+
+    heavyChargeId += 1
+    heavyStartedAt = os.clock()
+    heavyCharge = 0
+    heavyPhase = "Preparation"
+
+    heavyEvent:FireServer(
+        "Start",
+        heavyChargeId
     )
+
+    setHeavyAttributes(true, 0)
+
+    local chargeTrack = playTrack(
+        "HeavyCharge",
+        0.08
+    )
+
+    local thisId = heavyChargeId
+
+    task.spawn(function()
+        local deadline = os.clock() + 0.5
+
+        while chargeTrack
+            and chargeTrack.Length <= 0
+            and os.clock() < deadline do
+
+            task.wait(0.02)
+        end
+
+        if heavyChargeId ~= thisId then
+            return
+        end
+
+        if heavyPhase ~= "Preparation" then
+            return
+        end
+
+        local duration = 0.25
+
+        if chargeTrack and chargeTrack.Length > 0 then
+            local speed =
+                AnimationData.HeavyAnimations.HeavyCharge.Speed or 1
+
+            duration = chargeTrack.Length
+                / math.max(speed, 0.01)
+        end
+
+        task.wait(duration)
+
+        if heavyChargeId ~= thisId then
+            return
+        end
+
+        if heavyPhase ~= "Preparation" then
+            return
+        end
+
+        heavyPhase = "Holding"
+
+        stopTrack("HeavyCharge", 0.04)
+        playTrack("HeavyHold", 0.04)
+    end)
+end
+
+-- ==========================================
+-- LIBERACAO DO HEAVY
+-- ==========================================
+
+local function releaseHeavy()
+    if not heavyPhase then
+        return
+    end
+
+    local id = heavyChargeId
+
+    stopTrack("HeavyCharge", 0.04)
+    stopTrack("HeavyHold", 0.04)
+
+    heavyPhase = nil
+    setHeavyAttributes(false, 0)
+
+    if not canAct() then
+        heavyEvent:FireServer("Cancel", id)
+        fighter:ForceState("Idle")
+        return
+    end
+
+    fighter:ForceState("Idle")
+
+    if not startAttack("HeavyPunch", id) then
+        heavyEvent:FireServer("Cancel", id)
+    end
+end
+
+-- ==========================================
+-- COMBO NORMAL
+-- ==========================================
+
+local function performAttack()
+    if not canAct() then
+        return
+    end
+
+    local state = fighter:GetState()
+
+    if state == "Idle" then
+        startAttack(FIRST_ATTACK)
+        return
+    end
+
+    if state ~= "Attack" or not currentAttack then
+        return
+    end
+
+    local data = AnimationData.Combat[currentAttack]
+
+    if not data or not data.Next or queuedAttack then
+        return
+    end
+
+    local progress = getAttackElapsed()
+        / math.max(attackDuration, 0.01)
+
+    if progress >= COMBO_WINDOW_START
+        and progress <= 1 then
+
+        queuedAttack = data.Next
+    end
 end
 
 -- ==========================================
@@ -382,26 +555,24 @@ end
 -- ==========================================
 
 hitstopEvent.OnClientEvent:Connect(function(
-    attackName,
+    name,
     duration,
     confirmed,
-    attackId
+    id
 )
-    if typeof(attackName) ~= "string"
+    if typeof(name) ~= "string"
         or typeof(duration) ~= "number"
         or typeof(confirmed) ~= "boolean"
-        or typeof(attackId) ~= "number" then
+        or typeof(id) ~= "number" then
 
         return
     end
 
     if fighter:GetState() ~= "Attack"
-        or currentAttack ~= attackName then
+        or currentAttack ~= name
+        or id ~= attackSequence
+        or hitResolved then
 
-        return
-    end
-
-    if attackId ~= attackSequence or hitResolved then
         return
     end
 
@@ -415,7 +586,7 @@ hitstopEvent.OnClientEvent:Connect(function(
     end
 
     applyHitResult(
-        attackName,
+        name,
         duration,
         confirmed
     )
@@ -426,18 +597,43 @@ end)
 -- ==========================================
 
 RunService.Heartbeat:Connect(function()
+
+    -- Atualiza carregamento
+    if heavyPhase then
+        if not canAct() then
+            cancelHeavy(true)
+            mouseHeld = false
+            mouseToken += 1
+            return
+        end
+
+        heavyCharge = math.clamp(
+            (os.clock() - heavyStartedAt)
+                / heavyConfig.ChargeDuration,
+            0,
+            1
+        )
+
+        setHeavyAttributes(
+            true,
+            heavyCharge
+        )
+    end
+
     if not currentAttack
         or fighter:GetState() ~= "Attack" then
 
         return
     end
 
-    local attackName = currentAttack
-    local data = AnimationData.Combat[attackName]
+    local name = currentAttack
+    local data = AnimationData.Combat[name]
 
     if not data or attackDuration <= 0 then
         return
     end
+
+    local track = tracks[name]
 
     -- HITSTOP
     if hitstopStartedAt then
@@ -452,13 +648,53 @@ RunService.Heartbeat:Connect(function()
         hitstopStartedAt = nil
         hitstopEndsAt = 0
 
-        local track = attackTracks[attackName]
-
         if track and track.IsPlaying then
             track:AdjustSpeed(data.Speed or 1)
         end
 
-        print("[Hitstop] FIM:", attackName)
+        print("[Hitstop] FIM:", name)
+    end
+
+    -- PAUSA FINAL DO HEAVYPUNCH
+    if name == "HeavyPunch"
+        and track
+        and track.IsPlaying then
+
+        if not heavyEndFreezeDone
+            and not heavyEndFreezeStartedAt
+            and not hitstopStartedAt
+            and track.Length > 0
+            and track.TimePosition
+                >= track.Length * HEAVY_END_FREEZE_AT then
+
+            heavyEndFreezeStartedAt = os.clock()
+            heavyEndFreezeEndsAt =
+                heavyEndFreezeStartedAt
+                + HEAVY_END_FREEZE_DURATION
+
+            track:AdjustSpeed(0)
+
+            print("[HeavyPunch] Pose final congelada")
+        end
+
+        if heavyEndFreezeStartedAt then
+            local now = os.clock()
+
+            if now < heavyEndFreezeEndsAt then
+                return
+            end
+
+            totalHeavyEndPausedTime +=
+                now - heavyEndFreezeStartedAt
+
+            heavyEndFreezeStartedAt = nil
+            heavyEndFreezeEndsAt = 0
+            heavyEndFreezeDone = true
+
+            track:AdjustSpeed(data.Speed or 1)
+
+            print("[HeavyPunch] Pose final liberada")
+        end
     end
 
     local elapsed = getAttackElapsed()
@@ -475,19 +711,12 @@ RunService.Heartbeat:Connect(function()
         hitRequested = true
         hitRequestedAt = os.clock()
 
-        print(
-            "[Combat] Ponto de impacto:",
-            attackName,
-            "| Progresso:",
-            progress
-        )
-
         if hitResponse then
             local response = hitResponse
             hitResponse = nil
 
             applyHitResult(
-                attackName,
+                name,
                 response.Duration,
                 response.Confirmed
             )
@@ -496,12 +725,12 @@ RunService.Heartbeat:Connect(function()
 
     -- AGUARDA CONFIRMACAO
     if hitRequested and not hitResolved then
-        if os.clock() - hitRequestedAt >= HIT_CONFIRM_TIMEOUT then
+        if os.clock() - hitRequestedAt >= HIT_TIMEOUT then
             hitResolved = true
 
             print(
                 "[Combat] Timeout de confirmacao:",
-                attackName
+                name
             )
         else
             return
@@ -516,13 +745,11 @@ RunService.Heartbeat:Connect(function()
     end
 
     -- TRANSICAO DO COMBO
-    local transitionPoint =
-        data.Transition or COMBO_TRANSITION
+    local transition = data.Transition
+        or COMBO_TRANSITION
 
-    local transitionTime = attackDuration * math.max(
-        transitionPoint,
-        hitAt
-    )
+    local transitionTime = attackDuration
+        * math.max(transition, hitAt)
 
     if queuedAttack and elapsed >= transitionTime then
         if not isRolling() then
@@ -545,57 +772,75 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ==========================================
--- INPUT DE ATAQUE
+-- INPUT
 -- ==========================================
 
-local function performAttack()
-    -- Bloqueia ataques enquanto estiver rolando.
-    if isRolling() then
+UIS.InputBegan:Connect(function(input, processed)
+    if processed then
         return
     end
 
-    if not humanoid or humanoid.Health <= 0 then
+    if input.UserInputType
+        ~= Enum.UserInputType.MouseButton1 then
+
         return
     end
 
-    local state = fighter:GetState()
-
-    if state == "Idle" then
-        startAttack(FIRST_ATTACK)
+    if mouseHeld then
         return
     end
 
-    if state ~= "Attack" or not currentAttack then
+    mouseHeld = true
+    mousePressedAt = os.clock()
+    mouseToken += 1
+
+    local token = mouseToken
+
+    task.delay(
+        heavyConfig.HoldThreshold,
+        function()
+
+            if token ~= mouseToken
+                or not mouseHeld then
+
+                return
+            end
+
+            if not canAct() then
+                return
+            end
+
+            if fighter:GetState() ~= "Idle" then
+                return
+            end
+
+            startHeavy()
+        end
+    )
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType
+        ~= Enum.UserInputType.MouseButton1 then
+
         return
     end
 
-    local data = AnimationData.Combat[currentAttack]
-
-    if not data or not data.Next or queuedAttack then
+    if not mouseHeld then
         return
     end
 
-    local progress = getAttackElapsed() / attackDuration
+    mouseHeld = false
+    mouseToken += 1
 
-    if progress >= COMBO_WINDOW_START
-        and progress <= 1 then
+    if heavyPhase then
+        releaseHeavy()
+    else
+        local held = os.clock() - mousePressedAt
 
-        queuedAttack = data.Next
-
-        print(
-            "[Combat] Proximo golpe preparado:",
-            queuedAttack
-        )
-    end
-end
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then
-        return
-    end
-
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        performAttack()
+        if held < heavyConfig.HoldThreshold then
+            performAttack()
+        end
     end
 end)
 
@@ -609,4 +854,4 @@ if player.Character then
     setupCharacter(player.Character)
 end
 
-print("[Combat] Sistema carregado")
+print("[Combat] Combo + Heavy Melee carregados")

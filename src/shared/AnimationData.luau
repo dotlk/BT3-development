@@ -3,20 +3,24 @@
 -- Configuracoes de animacoes, ataques e hitboxes
 
 local AnimationData = {
+    Heavy = {
+        HoldThreshold = 0.20,
+        ChargeDuration = 1.50,
+        GuardBreakThreshold = 0.70,
+        MinMultiplier = 1.20,
+        MaxMultiplier = 3.00,
+    },
 
     Combat = {
-
         Punch1 = {
             Id = "rbxassetid://76413761527862",
             Priority = Enum.AnimationPriority.Action,
             Looped = false,
             Speed = 1,
-
             Damage = 5,
             HitAt = 0.80,
             Hitstop = 0.05,
             Next = "Punch2",
-
             Hitbox = {
                 Size = Vector3.new(2.5, 2.5, 3),
                 Offset = CFrame.new(0, 0, -2),
@@ -30,12 +34,10 @@ local AnimationData = {
             Priority = Enum.AnimationPriority.Action,
             Looped = false,
             Speed = 1,
-
             Damage = 5,
             HitAt = 0.80,
             Hitstop = 0.05,
             Next = "Punch3",
-
             Hitbox = {
                 Size = Vector3.new(2.5, 2.5, 3),
                 Offset = CFrame.new(0, 0, -2),
@@ -49,15 +51,12 @@ local AnimationData = {
             Priority = Enum.AnimationPriority.Action,
             Looped = false,
             Speed = 1,
-
             Duration = 0.8,
             Transition = 0.55,
-
             Damage = 8,
             HitAt = 0.60,
             Hitstop = 0.10,
             Next = "Finisher4",
-
             Hitbox = {
                 Size = Vector3.new(3, 3, 3.5),
                 Offset = CFrame.new(0, 0, -2.3),
@@ -71,12 +70,10 @@ local AnimationData = {
             Priority = Enum.AnimationPriority.Action,
             Looped = false,
             Speed = 1,
-
             Damage = 12,
             HitAt = 0.90,
             Hitstop = 0.20,
             Next = nil,
-
             Hitbox = {
                 Size = Vector3.new(3.5, 3, 4),
                 Offset = CFrame.new(0, 0, -2.5),
@@ -84,10 +81,43 @@ local AnimationData = {
                 Finish = 0.98,
             },
         },
+
+        HeavyPunch = {
+            Id = "rbxassetid://94704781008843",
+            Priority = Enum.AnimationPriority.Action,
+            Looped = false,
+            Speed = 0.75,
+            Duration = 0.50,
+            Damage = 5,
+            HitAt = 0.50,
+            Hitstop = 0.60,
+            Next = nil,
+            Hitbox = {
+                Size = Vector3.new(3, 3, 4),
+                Offset = CFrame.new(0, 0, -2.5),
+                Start = 0.40,
+                Finish = 0.60,
+            },
+        },
+    },
+
+    HeavyAnimations = {
+        HeavyCharge = {
+            Id = "rbxassetid://99442157497018",
+            Priority = Enum.AnimationPriority.Action,
+            Looped = false,
+            Speed = 0.65,
+        },
+
+        HeavyHold = {
+            Id = "rbxassetid://102366748161716",
+            Priority = Enum.AnimationPriority.Action,
+            Looped = true,
+            Speed = 0.20,
+        },
     },
 
     HitReactions = {
-
         Hit1 = {
             Id = "rbxassetid://136878400855885",
             Priority = Enum.AnimationPriority.Action2,
@@ -110,12 +140,7 @@ local AnimationData = {
         },
     },
 
-    -- ==========================================
-    -- MOVIMENTACAO
-    -- ==========================================
-
     Movement = {
-
         QuickDashForward = {
             Id = "rbxassetid://98744320846968",
             Priority = Enum.AnimationPriority.Action,
@@ -161,3 +186,4 @@ local AnimationData = {
 }
 
 return AnimationData
+aa

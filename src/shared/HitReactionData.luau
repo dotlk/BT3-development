@@ -1,8 +1,5 @@
 
 -- HitReactionData.luau
--- Estrutura inicial de reacoes inspirada no BT3
--- Os tempos serao definidos apos estudarmos
--- os handlers e registros de ataques originais
 
 local HitReactionData = {}
 
@@ -24,7 +21,6 @@ HitReactionData.Reaction = {
     Recovery = "Recovery",
 }
 
--- IDs confirmados no codigo descompilado
 HitReactionData.OriginalIds = {
     None = 1,
     NoFlinch = 2,
@@ -32,8 +28,6 @@ HitReactionData.OriginalIds = {
     GrabB = 14,
 }
 
--- Classificacao inicial para nosso prototipo.
--- Ainda nao representa a tabela exata de ataques do BT3.
 HitReactionData.Attacks = {
     Punch1 = {
         Result = "Hit",
@@ -53,6 +47,11 @@ HitReactionData.Attacks = {
     Finisher4 = {
         Result = "Hit",
         Reaction = "Knockback",
+    },
+
+    HeavyPunch = {
+        Result = "Hit",
+        Reaction = "Stun",
     },
 }
 
