@@ -15,8 +15,9 @@ local AnimationData = {
         Block = {
             Id = "rbxassetid://91707314777281",
             Priority = Enum.AnimationPriority.Action2,
-            Looped = true,
+            Looped = false,
             Speed = 1,
+            FreezeAt = 0.99,
         },
     },
 

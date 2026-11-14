@@ -480,8 +480,10 @@ local function executeMovement(isRoll, preferredKey)
         return false
     end
 
-    -- Com Lock-On, W avanca e S recua em relacao ao alvo.
-    -- Sem Lock-On, mantem a escolha anterior: W/S fazem Dash frontal.
+    -- W/S: Lock-On > First Person > Normal View.
+    -- Lock-On: W aproxima, S afasta do alvo.
+    -- First Person: W avanca, S recua em relacao ao personagem.
+    -- Normal View: W e S avancam para onde o personagem olha.
     if not isRoll and (
         selectedKey == Enum.KeyCode.W
         or selectedKey == Enum.KeyCode.S
@@ -491,10 +493,6 @@ local function executeMovement(isRoll, preferredKey)
 
         if target then
             forward = flatten(target.Position - root.Position)
-            if forward.Magnitude < 0.01 then
-                forward = flatten(root.CFrame.LookVector)
-            end
-            -- Mantem W e S distintos durante o Lock-On.
         else
             forward = flatten(root.CFrame.LookVector)
         end
@@ -503,10 +501,22 @@ local function executeMovement(isRoll, preferredKey)
             return false
         end
 
-        if target then
+        local camera = workspace.CurrentCamera
+        local isFirstPerson = false
+
+        if camera then
+            local cameraDistance =
+                (camera.CFrame.Position - root.Position).Magnitude
+
+            isFirstPerson = cameraDistance < 2
+        end
+
+        if target or isFirstPerson then
+            -- Mantem a tecla e a animacao correspondentes.
             direction = selectedKey == Enum.KeyCode.S
                 and -forward.Unit or forward.Unit
         else
+            -- Na terceira pessoa sem Lock-On, o Dash e sempre frontal.
             direction = forward.Unit
             selectedKey = Enum.KeyCode.W
         end

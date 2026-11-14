@@ -1,9 +1,10 @@
 
 -- TrainingDummyGuard.server.luau
--- Guard, segmentos e animacao congelada do Dummy
+-- Configuracao, segmentos e animacao do Dummy
 
 local Workspace = game:GetService("Workspace")
 local RS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local AnimationData = require(
     RS:WaitForChild("Shared"):WaitForChild("AnimationData")
@@ -15,11 +16,20 @@ local FADE_TIME = 0.12
 
 local guardAnimation = AnimationData.Guard.Block
 
+local initialized = setmetatable({}, {
+    __mode = "k",
+})
+
 local function setupDummy(dummy)
     if not dummy:IsA("Model") then
-        warn("[DummyGuard] TrainingDummy nao e um Model")
         return
     end
+
+    if initialized[dummy] then
+        return
+    end
+
+    initialized[dummy] = true
 
     local humanoid = dummy:WaitForChild("Humanoid")
 
@@ -50,97 +60,46 @@ local function setupDummy(dummy)
     animation.AnimationId = guardAnimation.Id
 
     local guardTrack = animator:LoadAnimation(animation)
+
     guardTrack.Priority = guardAnimation.Priority
     guardTrack.Looped = false
 
     animation:Destroy()
 
-    local animationToken = 0
+    local guardFrozen = false
+    local guardStartedAt = 0
+    local guardDuration = 0
 
-    local function freezeAnimation(token)
-        task.spawn(function()
-            local deadline = os.clock() + 3
-
-            while token == animationToken
-                and guardTrack.IsPlaying
-                and guardTrack.Length <= 0
-                and os.clock() < deadline do
-
-                task.wait()
-            end
-
-            if token ~= animationToken
-                or not guardTrack.IsPlaying
-                or guardTrack.Length <= 0 then
-
-                return
-            end
-
-            local freezeAt = math.clamp(
-                guardAnimation.FreezeAt or 0.99,
-                0,
-                0.999
-            )
-
-            local targetPosition =
-                guardTrack.Length * freezeAt
-
-            while token == animationToken
-                and guardTrack.IsPlaying
-                and guardTrack.TimePosition < targetPosition do
-
-                task.wait()
-            end
-
-            if token ~= animationToken
-                or not guardTrack.IsPlaying then
-
-                return
-            end
-
-            guardTrack.TimePosition = targetPosition
-            guardTrack:AdjustSpeed(0)
-
-            print("[DummyGuard] Pose final congelada")
-        end)
+    local function canGuard()
+        return dummy:GetAttribute("Guarding") == true
+            and dummy:GetAttribute("GuardBroken") ~= true
+            and dummy:GetAttribute("CombatStunned") ~= true
+            and humanoid.Health > 0
     end
 
     local function updateAnimation()
-        local guarding =
-            dummy:GetAttribute("Guarding") == true
-
-        local broken =
-            dummy:GetAttribute("GuardBroken") == true
-
-        local stunned =
-            dummy:GetAttribute("CombatStunned") == true
-
-        local canPlay =
-            guarding
-            and not broken
-            and not stunned
-            and humanoid.Health > 0
-
-        if canPlay then
+        if canGuard() then
             if not guardTrack.IsPlaying then
-                animationToken += 1
+                guardFrozen = false
+                guardDuration = 0
+                guardStartedAt = os.clock()
 
                 guardTrack:Play(FADE_TIME)
                 guardTrack:AdjustSpeed(
                     guardAnimation.Speed or 1
                 )
 
-                freezeAnimation(animationToken)
+                print("[DummyGuard] Animacao iniciada")
             end
-        elseif guardTrack.IsPlaying then
-            animationToken += 1
-            guardTrack:Stop(FADE_TIME)
+        else
+            guardFrozen = false
+            guardDuration = 0
+
+            if guardTrack.IsPlaying then
+                guardTrack:Stop(FADE_TIME)
+            end
         end
     end
-
-    -- ==========================================
-    -- SEGMENTOS
-    -- ==========================================
 
     local function updateSegments()
         local segments =
@@ -170,6 +129,63 @@ local function setupDummy(dummy)
     end
 
     -- ==========================================
+    -- CONGELAMENTO DA ANIMACAO
+    -- ==========================================
+
+    local heartbeatConnection
+
+    heartbeatConnection = RunService.Heartbeat:Connect(function()
+        if not dummy.Parent or humanoid.Health <= 0 then
+            if heartbeatConnection then
+                heartbeatConnection:Disconnect()
+                heartbeatConnection = nil
+            end
+            return
+        end
+
+        if not canGuard() or guardFrozen then
+            return
+        end
+
+        if guardTrack.Length <= 0 then
+            return
+        end
+
+        local freezeAt = math.clamp(
+            guardAnimation.FreezeAt or 0.95,
+            0.05,
+            0.98
+        )
+
+        local speed = math.max(
+            guardAnimation.Speed or 1,
+            0.01
+        )
+
+        local targetPosition =
+            guardTrack.Length * freezeAt
+
+        if guardDuration <= 0 then
+            guardDuration = targetPosition / speed
+        end
+
+        local elapsed = os.clock() - guardStartedAt
+
+        if elapsed >= guardDuration then
+            if not guardTrack.IsPlaying then
+                guardTrack:Play(0, 1, 0)
+            end
+
+            guardTrack.TimePosition = targetPosition
+            guardTrack:AdjustSpeed(0)
+
+            guardFrozen = true
+
+            print("[DummyGuard] Pose congelada")
+        end
+    end)
+
+    -- ==========================================
     -- EVENTOS
     -- ==========================================
 
@@ -190,7 +206,7 @@ local function setupDummy(dummy)
     ):Connect(updateSegments)
 
     humanoid.Died:Connect(function()
-        animationToken += 1
+        guardFrozen = false
         guardTrack:Stop(0)
     end)
 

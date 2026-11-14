@@ -1,7 +1,7 @@
 
 -- CombatController.client.luau
 -- Combo normal + Heavy Melee + Guard
--- Guard congela na pose final da animacao
+-- QuickStep cancela Guard
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -23,7 +23,6 @@ local DEFAULT_DURATION = 0.4
 
 local RECOVERY_NORMAL = 0.15
 local RECOVERY_FINISHER = 0.60
-
 local COMBO_WINDOW_START = 0.25
 local COMBO_TRANSITION = 0.75
 local HIT_TIMEOUT = 0.60
@@ -61,14 +60,16 @@ local mousePressedAt = 0
 local mouseToken = 0
 
 local guardHeld = false
-local guardToken = 0
+local guardFrozen = false
+local guardStartedAt = 0
+local guardDuration = 0
 
-local heavyPhase = nil
+local heavyPhase
 local heavyStartedAt = 0
 local heavyCharge = 0
 local heavyChargeId = 0
 
-local heavyEndFreezeStartedAt = nil
+local heavyEndFreezeStartedAt
 local heavyEndFreezeEndsAt = 0
 local heavyEndFreezeDone = false
 local totalHeavyEndPausedTime = 0
@@ -86,13 +87,18 @@ local function isRolling()
     return c and c:GetAttribute("IsRolling") == true
 end
 
+local function isQuickStepping()
+    local c = character()
+    return c and c:GetAttribute("IsQuickStepping") == true
+end
+
 local function isStunned()
     local c = character()
     return c and c:GetAttribute("CombatStunned") == true
 end
 
 local function canAct()
-    return humanoid
+    return humanoid ~= nil
         and humanoid.Health > 0
         and not isRolling()
         and not isStunned()
@@ -148,53 +154,10 @@ end
 -- GUARD
 -- ==========================================
 
-local function freezeGuardTrack(track, token)
-    local config = AnimationData.Guard.Block
-    local freezeAt = config.FreezeAt or 0.99
-
-    task.spawn(function()
-        local deadline = os.clock() + 3
-
-        -- Aguarda o carregamento da duracao.
-        while token == guardToken
-            and track.IsPlaying
-            and track.Length <= 0
-            and os.clock() < deadline do
-
-            task.wait()
-        end
-
-        if token ~= guardToken
-            or not track.IsPlaying
-            or track.Length <= 0 then
-
-            return
-        end
-
-        local targetPosition = track.Length
-            * math.clamp(freezeAt, 0, 0.999)
-
-        while token == guardToken
-            and track.IsPlaying
-            and track.TimePosition < targetPosition do
-
-            task.wait()
-        end
-
-        if token ~= guardToken
-            or not track.IsPlaying
-            or fighter:GetState() ~= "Block" then
-
-            return
-        end
-
-        track.TimePosition = targetPosition
-        track:AdjustSpeed(0)
-    end)
-end
-
 local function startGuard()
-    if not guardHeld or not canAct() then
+    if not guardHeld
+        or not canAct()
+        or isQuickStepping() then
         return
     end
 
@@ -202,23 +165,28 @@ local function startGuard()
         return
     end
 
-    if fighter:Transition("Block") then
-        guardToken += 1
-
-        setGuardAttribute(true)
-
-        local track = playTrack("Block", 0.12)
-
-        if track then
-            freezeGuardTrack(track, guardToken)
-        end
-
-        print("[Guard] Ativado")
+    if not fighter:Transition("Block") then
+        return
     end
+
+    guardFrozen = false
+    guardStartedAt = os.clock()
+    guardDuration = 0
+
+    setGuardAttribute(true)
+
+    local track = playTrack("Block", 0.12)
+
+    if track then
+        track.Looped = false
+    end
+
+    print("[Guard] Ativado")
 end
 
 local function stopGuard()
-    guardToken += 1
+    guardFrozen = false
+    guardDuration = 0
 
     stopTrack("Block", 0.12)
 
@@ -227,6 +195,45 @@ local function stopGuard()
     end
 
     setGuardAttribute(false)
+end
+
+local function updateGuardAnimation()
+    if fighter:GetState() ~= "Block" then
+        return
+    end
+
+    local track = tracks.Block
+
+    if not track or guardFrozen or track.Length <= 0 then
+        return
+    end
+
+    local config = AnimationData.Guard.Block
+    local speed = math.max(config.Speed or 1, 0.01)
+
+    local freezeAt = math.clamp(
+        config.FreezeAt or 0.95,
+        0.05,
+        0.98
+    )
+
+    local targetPosition = track.Length * freezeAt
+
+    if guardDuration <= 0 then
+        guardDuration = targetPosition / speed
+    end
+
+    if os.clock() - guardStartedAt >= guardDuration then
+        if not track.IsPlaying then
+            track:Play(0, 1, 0)
+        end
+
+        track.TimePosition = targetPosition
+        track:AdjustSpeed(0)
+
+        guardFrozen = true
+        print("[Guard] Pose congelada")
+    end
 end
 
 -- ==========================================
@@ -249,8 +256,8 @@ end
 local function getAttackElapsed()
     local now = os.clock()
 
-    local paused = totalPausedTime
-        + totalHeavyEndPausedTime
+    local paused =
+        totalPausedTime + totalHeavyEndPausedTime
 
     if hitstopStartedAt then
         paused += now - hitstopStartedAt
@@ -285,7 +292,6 @@ local function cancelHeavy(notifyServer)
 
     heavyPhase = nil
     heavyCharge = 0
-
     setHeavyAttributes(false, 0)
 
     if fighter:GetState() == "HeavyCharge" then
@@ -294,16 +300,17 @@ local function cancelHeavy(notifyServer)
 end
 
 -- ==========================================
--- SETUP DO PERSONAGEM
+-- SETUP
 -- ==========================================
 
 local function setupCharacter(c)
     attackSequence += 1
     mouseToken += 1
-    guardToken += 1
 
     mouseHeld = false
     guardHeld = false
+    guardFrozen = false
+    guardDuration = 0
 
     cancelHeavy(false)
     fighter:ForceState("Idle")
@@ -339,7 +346,6 @@ local function setupCharacter(c)
             track.Looped = data.Looped
 
             tracks[name] = track
-
             animation:Destroy()
         end
     end
@@ -427,12 +433,11 @@ local function applyHitResult(name, duration, confirmed)
     hitstopEndsAt = hitstopStartedAt + duration
 
     track:AdjustSpeed(0)
-
     print("[Hitstop] INICIO:", name)
 end
 
 -- ==========================================
--- INICIO DO ATAQUE
+-- ATAQUE
 -- ==========================================
 
 local function startAttack(name, heavyId)
@@ -496,7 +501,6 @@ local function startAttack(name, heavyId)
     )
 
     print("[Combat] Ataque:", name)
-
     return true
 end
 
@@ -518,18 +522,10 @@ local function startHeavy()
     heavyCharge = 0
     heavyPhase = "Preparation"
 
-    heavyEvent:FireServer(
-        "Start",
-        heavyChargeId
-    )
-
+    heavyEvent:FireServer("Start", heavyChargeId)
     setHeavyAttributes(true, 0)
 
-    local chargeTrack = playTrack(
-        "HeavyCharge",
-        0.08
-    )
-
+    local chargeTrack = playTrack("HeavyCharge", 0.08)
     local thisId = heavyChargeId
 
     task.spawn(function()
@@ -538,15 +534,11 @@ local function startHeavy()
         while chargeTrack
             and chargeTrack.Length <= 0
             and os.clock() < deadline do
-
             task.wait(0.02)
         end
 
-        if heavyChargeId ~= thisId then
-            return
-        end
-
-        if heavyPhase ~= "Preparation" then
+        if heavyChargeId ~= thisId
+            or heavyPhase ~= "Preparation" then
             return
         end
 
@@ -556,17 +548,14 @@ local function startHeavy()
             local speed =
                 AnimationData.HeavyAnimations.HeavyCharge.Speed or 1
 
-            duration = chargeTrack.Length
-                / math.max(speed, 0.01)
+            duration =
+                chargeTrack.Length / math.max(speed, 0.01)
         end
 
         task.wait(duration)
 
-        if heavyChargeId ~= thisId then
-            return
-        end
-
-        if heavyPhase ~= "Preparation" then
+        if heavyChargeId ~= thisId
+            or heavyPhase ~= "Preparation" then
             return
         end
 
@@ -633,12 +622,11 @@ local function performAttack()
         return
     end
 
-    local progress = getAttackElapsed()
-        / math.max(attackDuration, 0.01)
+    local progress =
+        getAttackElapsed() / math.max(attackDuration, 0.01)
 
     if progress >= COMBO_WINDOW_START
         and progress <= 1 then
-
         queuedAttack = data.Next
     end
 end
@@ -657,7 +645,6 @@ hitstopEvent.OnClientEvent:Connect(function(
         or typeof(duration) ~= "number"
         or typeof(confirmed) ~= "boolean"
         or typeof(id) ~= "number" then
-
         return
     end
 
@@ -665,7 +652,6 @@ hitstopEvent.OnClientEvent:Connect(function(
         or currentAttack ~= name
         or id ~= attackSequence
         or hitResolved then
-
         return
     end
 
@@ -674,36 +660,45 @@ hitstopEvent.OnClientEvent:Connect(function(
             Duration = duration,
             Confirmed = confirmed,
         }
-
         return
     end
 
-    applyHitResult(
-        name,
-        duration,
-        confirmed
-    )
+    applyHitResult(name, duration, confirmed)
 end)
 
 -- ==========================================
--- ATUALIZACAO DO COMBATE
+-- ATUALIZACAO
 -- ==========================================
 
 RunService.Heartbeat:Connect(function()
+    -- ======================================
+    -- GUARD E QUICKSTEP
+    -- ======================================
 
-    -- Atualiza Guard
-    if fighter:GetState() == "Block" then
+    if isQuickStepping() then
+        if fighter:GetState() == "Block" then
+            -- Cancela e exige novo pressionamento de M2.
+            guardHeld = false
+            stopGuard()
+
+            print("[Guard] Cancelado por QuickStep")
+        end
+    elseif fighter:GetState() == "Block" then
         if not guardHeld or not canAct() then
             stopGuard()
+        else
+            updateGuardAnimation()
         end
     elseif guardHeld
         and canAct()
         and fighter:GetState() == "Idle" then
-
         startGuard()
     end
 
-    -- Atualiza carregamento do Heavy
+    -- ======================================
+    -- HEAVY
+    -- ======================================
+
     if heavyPhase then
         if not canAct() then
             cancelHeavy(true)
@@ -719,15 +714,11 @@ RunService.Heartbeat:Connect(function()
             1
         )
 
-        setHeavyAttributes(
-            true,
-            heavyCharge
-        )
+        setHeavyAttributes(true, heavyCharge)
     end
 
     if not currentAttack
         or fighter:GetState() ~= "Attack" then
-
         return
     end
 
@@ -740,7 +731,10 @@ RunService.Heartbeat:Connect(function()
 
     local track = tracks[name]
 
+    -- ======================================
     -- HITSTOP
+    -- ======================================
+
     if hitstopStartedAt then
         local now = os.clock()
 
@@ -749,7 +743,6 @@ RunService.Heartbeat:Connect(function()
         end
 
         totalPausedTime += now - hitstopStartedAt
-
         hitstopStartedAt = nil
         hitstopEndsAt = 0
 
@@ -760,7 +753,10 @@ RunService.Heartbeat:Connect(function()
         print("[Hitstop] FIM:", name)
     end
 
+    -- ======================================
     -- PAUSA FINAL DO HEAVYPUNCH
+    -- ======================================
+
     if name == "HeavyPunch"
         and track
         and track.IsPlaying then
@@ -811,7 +807,10 @@ RunService.Heartbeat:Connect(function()
         1
     )
 
-    -- PONTO DE IMPACTO
+    -- ======================================
+    -- IMPACTO
+    -- ======================================
+
     if not hitRequested and progress >= hitAt then
         hitRequested = true
         hitRequestedAt = os.clock()
@@ -828,15 +827,10 @@ RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- AGUARDA CONFIRMACAO
     if hitRequested and not hitResolved then
         if os.clock() - hitRequestedAt >= HIT_TIMEOUT then
             hitResolved = true
-
-            print(
-                "[Combat] Timeout de confirmacao:",
-                name
-            )
+            print("[Combat] Timeout:", name)
         else
             return
         end
@@ -845,16 +839,18 @@ RunService.Heartbeat:Connect(function()
     if not hitRequested
         or not hitResolved
         or hitstopStartedAt then
-
         return
     end
 
+    -- ======================================
     -- TRANSICAO DO COMBO
+    -- ======================================
+
     local transition = data.Transition
         or COMBO_TRANSITION
 
-    local transitionTime = attackDuration
-        * math.max(transition, hitAt)
+    local transitionTime =
+        attackDuration * math.max(transition, hitAt)
 
     if queuedAttack and elapsed >= transitionTime then
         if not isRolling() then
@@ -862,11 +858,9 @@ RunService.Heartbeat:Connect(function()
         else
             queuedAttack = nil
         end
-
         return
     end
 
-    -- FIM DO ATAQUE
     if elapsed >= attackDuration then
         if queuedAttack and not isRolling() then
             startAttack(queuedAttack)
@@ -881,13 +875,16 @@ end)
 -- ==========================================
 
 UIS.InputBegan:Connect(function(input, processed)
-    if processed then
-        return
-    end
+    if processed then return end
 
     -- M2: Guard
     if input.UserInputType
         == Enum.UserInputType.MouseButton2 then
+
+        -- Nao inicia Guard durante QuickStep.
+        if isQuickStepping() then
+            return
+        end
 
         guardHeld = true
 
@@ -902,7 +899,6 @@ UIS.InputBegan:Connect(function(input, processed)
 
     if input.UserInputType
         ~= Enum.UserInputType.MouseButton1 then
-
         return
     end
 
@@ -920,32 +916,26 @@ UIS.InputBegan:Connect(function(input, processed)
 
     local token = mouseToken
 
-    task.delay(
-        heavyConfig.HoldThreshold,
-        function()
-
-            if token ~= mouseToken
-                or not mouseHeld
-                or guardHeld then
-
-                return
-            end
-
-            if not canAct() then
-                return
-            end
-
-            if fighter:GetState() ~= "Idle" then
-                return
-            end
-
-            startHeavy()
+    task.delay(heavyConfig.HoldThreshold, function()
+        if token ~= mouseToken
+            or not mouseHeld
+            or guardHeld then
+            return
         end
-    )
+
+        if not canAct() then
+            return
+        end
+
+        if fighter:GetState() ~= "Idle" then
+            return
+        end
+
+        startHeavy()
+    end)
 end)
 
 UIS.InputEnded:Connect(function(input)
-
     -- Soltar M2
     if input.UserInputType
         == Enum.UserInputType.MouseButton2 then
@@ -959,7 +949,6 @@ UIS.InputEnded:Connect(function(input)
 
     if input.UserInputType
         ~= Enum.UserInputType.MouseButton1 then
-
         return
     end
 
@@ -977,7 +966,6 @@ UIS.InputEnded:Connect(function(input)
 
         if held < heavyConfig.HoldThreshold
             and not guardHeld then
-
             performAttack()
         end
     end
