@@ -1,8 +1,7 @@
 
 -- CombatHit.luau
 -- Resolucao de acertos, Guard, Hitstun, Knockback e Hitstop
--- Reacoes com pose inicial de impacto
--- Suporte ao HeavyPunch
+-- Guard Break interrompido ao receber um golpe
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ContentProvider = game:GetService("ContentProvider")
@@ -21,6 +20,10 @@ local AnimationData = require(
 
 local CombatGuard = require(
     script.Parent:WaitForChild("CombatGuard")
+)
+
+local CombatStun = require(
+    script.Parent:WaitForChild("CombatStun")
 )
 
 local CombatHit = {}
@@ -561,7 +564,19 @@ function CombatHit.Apply(
         return true
     end
 
-    -- Golpe nao defendido
+    -- ==========================================
+    -- INTERRUPCAO DO GUARD BREAK
+    -- ==========================================
+
+    -- Se o defensor estiver no Guard Break Stun,
+    -- encerra esse estado antes de aplicar o golpe.
+    -- O temporizador e a animacao sao cancelados.
+    CombatStun.CancelGuardBreak(defender)
+
+    -- ==========================================
+    -- GOLPE NAO DEFENDIDO
+    -- ==========================================
+
     humanoid:TakeDamage(damage)
 
     if humanoid.Health > 0 then

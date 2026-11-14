@@ -3,14 +3,13 @@
 -- Resolucao de defesa e Guard Break
 -- Executado exclusivamente pelo servidor
 
+local CombatStun = require(
+    script.Parent:WaitForChild("CombatStun")
+)
+
 local CombatGuard = {}
 
 local MAX_SEGMENTS = 4
-local GUARD_BREAK_STUN = 1.0
-
-local guardBreakTokens = setmetatable({}, {
-    __mode = "k",
-})
 
 local function isFrontal(attacker, defender)
     local attackerCharacter = attacker.Character
@@ -52,55 +51,7 @@ local function isFrontal(attacker, defender)
     return forward.Unit:Dot(horizontal.Unit) >= 0
 end
 
-local function applyGuardBreak(defender, humanoid)
-    local token = (guardBreakTokens[defender] or 0) + 1
-    guardBreakTokens[defender] = token
-
-    local walkSpeed = humanoid.WalkSpeed
-    local jumpPower = humanoid.JumpPower
-    local jumpHeight = humanoid.JumpHeight
-
-    defender:SetAttribute("Guarding", false)
-    defender:SetAttribute("GuardBroken", true)
-    defender:SetAttribute("CombatStunned", true)
-
-    humanoid.WalkSpeed = 0
-    humanoid.JumpPower = 0
-    humanoid.JumpHeight = 0
-
-    print("[Guard] GUARD BREAK:", defender.Name)
-
-    task.delay(GUARD_BREAK_STUN, function()
-        if guardBreakTokens[defender] ~= token then
-            return
-        end
-
-        if not defender.Parent or humanoid.Health <= 0 then
-            return
-        end
-
-        defender:SetAttribute("GuardBroken", false)
-        defender:SetAttribute("CombatStunned", false)
-
-        humanoid.WalkSpeed = walkSpeed
-        humanoid.JumpPower = jumpPower
-        humanoid.JumpHeight = jumpHeight
-
-        -- O Dummy volta a defender apos o Stun.
-        -- Jogadores precisarao manter M2 pressionado
-        -- quando integrarmos o Guard ao servidor.
-        if defender.Name == "TrainingDummy"
-            and (defender:GetAttribute("GuardSegments") or 0) > 0 then
-
-            defender:SetAttribute("Guarding", true)
-        end
-
-        print("[Guard] FIM DO GUARD BREAK:", defender.Name)
-    end)
-end
-
--- Retorna true se o Guard resolveu o golpe.
--- Um Guard Break tambem conta como golpe resolvido.
+-- Retorna true quando o golpe foi resolvido pelo Guard.
 function CombatGuard.Resolve(
     attacker,
     defender,
@@ -147,13 +98,13 @@ function CombatGuard.Resolve(
         return false
     end
 
-    -- Heavy suficientemente carregado quebra o Guard
+    -- Heavy suficientemente carregado quebra o Guard.
     if attackName == "HeavyPunch" and guardBreak == true then
-        applyGuardBreak(defender, humanoid)
+        CombatStun.ApplyGuardBreak(defender, humanoid)
         return true
     end
 
-    -- Golpes que consomem um segmento
+    -- Golpes que consomem um segmento.
     if attackName == "Finisher4"
         or attackName == "HeavyPunch" then
 
@@ -175,7 +126,7 @@ function CombatGuard.Resolve(
         return true
     end
 
-    -- Socos leves nao consomem segmentos
+    -- Socos leves nao consomem segmentos.
     if attackName == "Punch1"
         or attackName == "Punch2"
         or attackName == "Punch3" then

@@ -148,6 +148,16 @@ local AnimationData = {
             Looped = false,
             Speed = 1,
         },
+
+        -- Guard Break: animacao unica com pausa na metade
+        GuardBreakStun = {
+            Id = "rbxassetid://71479812039474",
+            Priority = Enum.AnimationPriority.Action4,
+            Looped = true,
+            Speed = 0.35,
+            PauseAt = 0.50,
+            PauseDuration = 0.45,
+        },
     },
 
     Movement = {
