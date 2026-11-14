@@ -5,11 +5,7 @@
 -- Com Lock-On: movimento orbital
 -- Sem Lock-On: movimento direcional
 --
--- Stamina:
--- Maximo: 100
--- Dash: 20
--- Roll: 40
--- Regeneracao: +20 a cada 5 segundos
+-- Stamina controlada pelo servidor.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -21,6 +17,8 @@ local player = Players.LocalPlayer
 local AnimationData = require(
     ReplicatedStorage:WaitForChild("Shared"):WaitForChild("AnimationData")
 )
+
+local staminaRequest = ReplicatedStorage:WaitForChild("StaminaRequest")
 
 -- ==========================================
 -- CONFIGURACOES
@@ -35,21 +33,12 @@ local ROLL_DISTANCE = 14
 local ROLL_COOLDOWN = 0.35
 local ROLL_FALLBACK_DURATION = 0.65
 
--- Tempo necessario para ativar Roll.
 local ROLL_HOLD_DURATION = 0.25
 
 local ANIMATION_FADE = 0.04
 local COLLISION_MARGIN = 1.5
 
 local LOCK_ON_VALUE_NAME = "LockOnTarget"
-
--- STAMINA
-local STAMINA_MAX = 100
-local DASH_COST = 20
-local ROLL_COST = 40
-
-local STAMINA_REGEN_DELAY = 5.0
-local STAMINA_REGEN_AMOUNT = 20
 
 local DIRECTIONS = {
     [Enum.KeyCode.W] = Vector3.new(0, 0, -1),
@@ -90,6 +79,7 @@ local activeTrack = nil
 
 local stepping = false
 local rolling = false
+local requestingMovement = false
 
 local lastStep = -math.huge
 local lastRoll = -math.huge
@@ -100,7 +90,6 @@ local actionId = 0
 local savedWalkSpeed = nil
 local savedAutoRotate = nil
 
--- Controle de Shift.
 local shiftPressedAt = nil
 local shiftActionId = 0
 local shiftRollTriggered = false
@@ -110,59 +99,32 @@ local shiftPreferredKey = nil
 -- STAMINA
 -- ==========================================
 
-local stamina = STAMINA_MAX
-local lastStaminaUse = os.clock()
+-- Apenas leitura. O servidor controla o saldo real.
+local stamina = player:GetAttribute("QuickStepStamina") or 0
 
-local function updateStamina()
-    player:SetAttribute("QuickStepStamina", stamina)
-end
+player:GetAttributeChangedSignal(
+    "QuickStepStamina"
+):Connect(function()
+    stamina = player:GetAttribute("QuickStepStamina") or 0
+end)
 
-local function canSpendStamina(cost)
-    return stamina >= cost
-end
+local function requestStamina(action)
+    local success, approved = pcall(function()
+        return staminaRequest:InvokeServer(action)
+    end)
 
-local function spendStamina(cost)
-    if not canSpendStamina(cost) then
+    if not success then
+        warn("[Stamina] Falha ao consultar servidor")
         return false
     end
 
-    stamina -= cost
-    lastStaminaUse = os.clock()
-
-    updateStamina()
-
-    print(
-        "[Stamina] Consumo:",
-        cost,
-        "| Restante:",
-        stamina
-    )
+    if approved ~= true then
+        print("[Stamina] Movimento recusado:", action)
+        return false
+    end
 
     return true
 end
-
--- Regeneracao em segmentos inteiros.
-RunService.Heartbeat:Connect(function()
-    if stamina >= STAMINA_MAX then
-        return
-    end
-
-    local now = os.clock()
-
-    if now - lastStaminaUse < STAMINA_REGEN_DELAY then
-        return
-    end
-
-    stamina = math.min(
-        STAMINA_MAX,
-        stamina + STAMINA_REGEN_AMOUNT
-    )
-
-    lastStaminaUse = now
-    updateStamina()
-
-    print("[Stamina] Regenerada:", stamina)
-end)
 
 -- ==========================================
 -- UTILITARIOS
@@ -187,7 +149,6 @@ local function isShiftKey(key)
 end
 
 local function getHeldDirectionKey()
-    -- Prioriza direcoes laterais para Roll.
     if UserInputService:IsKeyDown(Enum.KeyCode.A) then
         return Enum.KeyCode.A
     end
@@ -346,6 +307,7 @@ end
 
 local function cancelMovement()
     actionId += 1
+    requestingMovement = false
     finishMovement()
     stopAnimation()
 end
@@ -461,7 +423,7 @@ end
 -- ==========================================
 
 local function executeMovement(isRoll, preferredKey)
-    if stepping then
+    if stepping or requestingMovement then
         print("[QuickStep] Movimento bloqueado: outro ativo")
         return false
     end
@@ -481,9 +443,6 @@ local function executeMovement(isRoll, preferredKey)
     end
 
     -- W/S: Lock-On > First Person > Normal View.
-    -- Lock-On: W aproxima, S afasta do alvo.
-    -- First Person: W avanca, S recua em relacao ao personagem.
-    -- Normal View: W e S avancam para onde o personagem olha.
     if not isRoll and (
         selectedKey == Enum.KeyCode.W
         or selectedKey == Enum.KeyCode.S
@@ -512,19 +471,15 @@ local function executeMovement(isRoll, preferredKey)
         end
 
         if target or isFirstPerson then
-            -- Mantem a tecla e a animacao correspondentes.
             direction = selectedKey == Enum.KeyCode.S
                 and -forward.Unit or forward.Unit
         else
-            -- Na terceira pessoa sem Lock-On, o Dash e sempre frontal.
             direction = forward.Unit
             selectedKey = Enum.KeyCode.W
         end
     end
 
-    -- Corrige a postura ANTES de calcular a trajetoria lateral.
-    -- Com Lock-On: olha para o oponente.
-    -- Sem Lock-On: olha na direcao horizontal da camera.
+    -- Corrige a postura do Dash lateral.
     local isLateral =
         selectedKey == Enum.KeyCode.A
         or selectedKey == Enum.KeyCode.D
@@ -546,18 +501,8 @@ local function executeMovement(isRoll, preferredKey)
 
     local now = os.clock()
 
-    local staminaCost = isRoll and ROLL_COST or DASH_COST
-
-    if not canSpendStamina(staminaCost) then
-        print(
-            "[QuickStep] Stamina insuficiente:",
-            stamina,
-            "/",
-            staminaCost
-        )
-        return false
-    end
-
+    -- Cooldown local para evitar requisicoes desnecessarias.
+    -- O servidor tambem valida o cooldown real.
     if isRoll then
         if now - lastRoll < ROLL_COOLDOWN then
             print("[Roll] Cooldown ativo")
@@ -581,12 +526,45 @@ local function executeMovement(isRoll, preferredKey)
         return false
     end
 
-    if not spendStamina(staminaCost) then
+    -- ======================================
+    -- AUTORIZACAO DO SERVIDOR
+    -- ======================================
+
+    local characterBeforeRequest = activeCharacter
+    local requestActionId = actionId
+
+    requestingMovement = true
+
+    local action = isRoll and "Roll" or "Dash"
+    local approved = requestStamina(action)
+
+    -- InvokeServer pode suspender esta funcao.
+    -- Confirma que o personagem nao mudou nesse intervalo.
+    if characterBeforeRequest ~= activeCharacter
+        or requestActionId ~= actionId then
+        requestingMovement = false
         return false
     end
 
-    -- Ajusta a orientacao no inicio da acao, sem gastar stamina
-    -- nem mudar a postura quando a acao foi recusada.
+    requestingMovement = false
+
+    if not approved then
+        return false
+    end
+
+    if not humanoid
+        or humanoid.Health <= 0
+        or not root
+        or stepping then
+        return false
+    end
+
+    now = os.clock()
+
+    -- ======================================
+    -- MOVIMENTO AUTORIZADO
+    -- ======================================
+
     if isLateral and lateralFacing then
         root.CFrame = CFrame.lookAt(
             root.Position,
@@ -614,7 +592,6 @@ local function executeMovement(isRoll, preferredKey)
     local duration = STEP_DURATION
     local distance = STEP_DISTANCE
 
-    -- Captura o estado de corrida uma unica vez no inicio da acao.
     local sprintBoost = character
         and character:GetAttribute("IsSprinting") == true
         and SPRINT_DISTANCE_MULTIPLIER or 1
@@ -765,7 +742,6 @@ local function executeMovement(isRoll, preferredKey)
                     local newPosition = currentRoot.Position + displacement
 
                     if isLateral then
-                        -- Mantem a postura frontal durante o Dash lateral.
                         local facing = getLateralFacing(
                             getLockOnTarget()
                         ) or lateralFacing
@@ -828,8 +804,6 @@ local function beginShiftAction()
     shiftActionId += 1
     local thisShiftAction = shiftActionId
 
-    -- Aguarda o tempo de segurada para decidir
-    -- se deve executar um Roll.
     task.delay(ROLL_HOLD_DURATION, function()
         if thisShiftAction ~= shiftActionId then
             return
@@ -845,14 +819,11 @@ local function beginShiftAction()
 
         local key = getHeldDirectionKey()
 
-        -- Roll so existe nas direcoes laterais.
         if key ~= Enum.KeyCode.A
             and key ~= Enum.KeyCode.D then
             return
         end
 
-        -- Marca a tentativa para impedir Dash
-        -- quando Shift for solto.
         shiftRollTriggered = true
 
         executeMovement(true, key)
@@ -874,14 +845,11 @@ local function endShiftAction()
         return
     end
 
-    -- Toque rapido: Dash.
     if heldDuration < ROLL_HOLD_DURATION then
         executeMovement(false, preferredKey)
         return
     end
 
-    -- Shift mantido com W/S: Dash ao soltar.
-    -- Shift mantido com A/D: Roll ja foi tentado.
     if not rollTriggered then
         local key = preferredKey
 
@@ -899,7 +867,6 @@ end
 UserInputService.InputBegan:Connect(function(input, processed)
     local key = input.KeyCode
 
-    -- Shift controla Dash e Roll.
     if isShiftKey(key) then
         if processed then
             return
@@ -913,8 +880,6 @@ UserInputService.InputEnded:Connect(function(input)
     local key = input.KeyCode
 
     if isShiftKey(key) then
-        -- Se o outro Shift continuar pressionado,
-        -- a acao permanece ativa.
         if shiftHeld() then
             return
         end
@@ -940,10 +905,9 @@ local function setupCharacter(character)
 
     activeCharacter = character
 
-    -- Reinicia stamina ao renascer.
-    stamina = STAMINA_MAX
-    lastStaminaUse = os.clock()
-    updateStamina()
+    -- O servidor reinicia a Stamina.
+    -- O cliente apenas acompanha o atributo replicado.
+    stamina = player:GetAttribute("QuickStepStamina") or 0
 
     lastStep = -math.huge
     lastRoll = -math.huge

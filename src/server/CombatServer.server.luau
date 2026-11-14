@@ -1,14 +1,19 @@
 
 -- CombatServer.server.luau
--- Validacao de ataques, Heavy Melee e Guard
+-- Validacao de ataques, Heavy Melee, Guard e PvP
+-- Deteccao de colisao entre jogadores e NPCs
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
 
-local CombatHit = require(script.Parent:WaitForChild("CombatHit"))
-local CombatCollision = require(script.Parent:WaitForChild("CombatCollision"))
+local CombatHit = require(
+    script.Parent:WaitForChild("CombatHit")
+)
+
+local CombatCollision = require(
+    script.Parent:WaitForChild("CombatCollision")
+)
 
 local AnimationData = require(
     RS:WaitForChild("Shared"):WaitForChild("AnimationData")
@@ -24,6 +29,10 @@ local activeAttacks = {}
 local lastAttack = {}
 local lastAttackId = {}
 local heavyCharges = {}
+
+-- ==========================================
+-- REMOTE EVENTS
+-- ==========================================
 
 local function remote(name)
     local event = RS:FindFirstChild(name)
@@ -41,20 +50,37 @@ local attackEvent = remote("CombatAttack")
 local hitstopEvent = remote("CombatHitstop")
 local heavyEvent = remote("CombatHeavyCharge")
 
+-- ==========================================
+-- VALIDACAO DO PERSONAGEM
+-- ==========================================
+
 local function validCharacter(player)
     local character = player.Character
-    if not character then return nil end
 
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local root = character:FindFirstChild("HumanoidRootPart")
+    if not character then
+        return nil
+    end
 
-    if not humanoid or humanoid.Health <= 0
-        or not root or not root:IsA("BasePart") then
+    local humanoid =
+        character:FindFirstChildOfClass("Humanoid")
+
+    local root =
+        character:FindFirstChild("HumanoidRootPart")
+
+    if not humanoid
+        or humanoid.Health <= 0
+        or not root
+        or not root:IsA("BasePart") then
+
         return nil
     end
 
     return character
 end
+
+-- ==========================================
+-- CONFIRMACAO DE HITSTOP
+-- ==========================================
 
 local function reply(player, attack, confirmed)
     local data = AnimationData.Combat[attack.Name]
@@ -69,7 +95,9 @@ local function reply(player, attack, confirmed)
 end
 
 local function finish(player, attack, confirmed)
-    if activeAttacks[player] ~= attack then return end
+    if activeAttacks[player] ~= attack then
+        return
+    end
 
     activeAttacks[player] = nil
 
@@ -85,12 +113,17 @@ end
 -- CARREGAMENTO DO HEAVY
 -- ==========================================
 
-heavyEvent.OnServerEvent:Connect(function(player, action, chargeId)
+heavyEvent.OnServerEvent:Connect(function(
+    player,
+    action,
+    chargeId
+)
     if typeof(action) ~= "string"
         or typeof(chargeId) ~= "number"
         or chargeId % 1 ~= 0
         or chargeId < 1
         or chargeId > 1000000000 then
+
         return
     end
 
@@ -104,17 +137,25 @@ heavyEvent.OnServerEvent:Connect(function(player, action, chargeId)
         return
     end
 
-    if action ~= "Start" then return end
-
-    local character = validCharacter(player)
-    if not character then return end
-
-    if character:GetAttribute("CombatStunned") == true
-        or character:GetAttribute("IsRolling") == true then
+    if action ~= "Start" then
         return
     end
 
-    if activeAttacks[player] then return end
+    local character = validCharacter(player)
+
+    if not character then
+        return
+    end
+
+    if character:GetAttribute("CombatStunned") == true
+        or character:GetAttribute("IsRolling") == true then
+
+        return
+    end
+
+    if activeAttacks[player] then
+        return
+    end
 
     local previous = lastAttack[player]
 
@@ -150,6 +191,7 @@ local function processAttack(
     duration,
     heavyId
 )
+    -- Validacao dos argumentos
     if typeof(attackName) ~= "string"
         or typeof(attackId) ~= "number"
         or attackId % 1 ~= 0
@@ -157,22 +199,31 @@ local function processAttack(
         or attackId > 1000000000
         or typeof(duration) ~= "number"
         or duration ~= duration then
+
         return
     end
 
     local data = AnimationData.Combat[attackName]
 
-    if not data or not data.Hitbox then return end
+    if not data or not data.Hitbox then
+        return
+    end
 
-    if duration < MIN_DURATION or duration > MAX_DURATION then
+    if duration < MIN_DURATION
+        or duration > MAX_DURATION then
+
         return
     end
 
     local character = validCharacter(player)
-    if not character then return end
+
+    if not character then
+        return
+    end
 
     if character:GetAttribute("CombatStunned") == true
         or character:GetAttribute("IsRolling") == true then
+
         return
     end
 
@@ -180,7 +231,9 @@ local function processAttack(
         return
     end
 
-    if activeAttacks[player] then return end
+    if activeAttacks[player] then
+        return
+    end
 
     local now = os.clock()
     local previous = lastAttack[player]
@@ -189,12 +242,17 @@ local function processAttack(
     local damage = data.Damage
     local chargeFraction = 0
 
+    -- ==========================================
+    -- CALCULO DO HEAVY
+    -- ==========================================
+
     if isHeavy then
         local charge = heavyCharges[player]
 
         if not charge
             or charge.Character ~= character
             or charge.Id ~= heavyId then
+
             return
         end
 
@@ -210,7 +268,8 @@ local function processAttack(
             1
         )
 
-        local multiplier = heavyConfig.MinMultiplier
+        local multiplier =
+            heavyConfig.MinMultiplier
             + (
                 heavyConfig.MaxMultiplier
                 - heavyConfig.MinMultiplier
@@ -218,6 +277,10 @@ local function processAttack(
 
         damage = data.Damage * multiplier
     end
+
+    -- ==========================================
+    -- VALIDACAO DO COMBO
+    -- ==========================================
 
     if previous then
         if now - previous.StartedAt < MIN_INTERVAL then
@@ -227,6 +290,7 @@ local function processAttack(
         if isHeavy then
             if now - previous.StartedAt
                 < previous.Duration + 0.15 then
+
                 return
             end
         elseif attackName ~= "Punch1" then
@@ -235,11 +299,13 @@ local function processAttack(
 
             if not previousData
                 or previousData.Next ~= attackName then
+
                 return
             end
 
             if now - previous.StartedAt
                 < previous.Duration * 0.5 then
+
                 return
             end
         end
@@ -247,23 +313,29 @@ local function processAttack(
         return
     end
 
-    if isHeavy then
-        heavyCharges[player] = nil
-    else
-        heavyCharges[player] = nil
-    end
+    heavyCharges[player] = nil
+
+    -- ==========================================
+    -- CONFIGURACAO DA HITBOX
+    -- ==========================================
 
     local hitbox = data.Hitbox
 
     local startFraction = math.clamp(
-        hitbox.Start or 0, 0, 1
+        hitbox.Start or 0,
+        0,
+        1
     )
 
     local finishFraction = math.clamp(
-        hitbox.Finish or 1, 0, 1
+        hitbox.Finish or 1,
+        0,
+        1
     )
 
-    if finishFraction <= startFraction then return end
+    if finishFraction <= startFraction then
+        return
+    end
 
     lastAttackId[player] = attackId
 
@@ -283,7 +355,8 @@ local function processAttack(
         Damage = damage,
         Charge = chargeFraction,
         GuardBreak = isHeavy
-            and chargeFraction >= heavyConfig.GuardBreakThreshold,
+            and chargeFraction >=
+                heavyConfig.GuardBreakThreshold,
         Connection = nil,
     }
 
@@ -292,17 +365,21 @@ local function processAttack(
     print(
         "[CombatServer]",
         attackName,
-        "Dano:", damage,
-        "Carga:", math.floor(chargeFraction * 100) .. "%",
-        "GuardBreak:", attack.GuardBreak
+        "| Dano:", damage,
+        "| Carga:",
+        math.floor(chargeFraction * 100) .. "%",
+        "| GuardBreak:",
+        attack.GuardBreak
     )
 
     -- ==========================================
-    -- DETECCAO DE COLISAO
+    -- DETECCAO DE COLISAO (PVP + NPC)
     -- ==========================================
 
     local function checkCollision()
-        if activeAttacks[player] ~= attack then return end
+        if activeAttacks[player] ~= attack then
+            return
+        end
 
         if validCharacter(player) ~= character then
             finish(player, attack, false)
@@ -316,38 +393,56 @@ local function processAttack(
             return
         end
 
-        if currentTime < attack.StartAt then return end
-
-        local dummy = Workspace:FindFirstChild("TrainingDummy")
-        if not dummy then return end
-
-        local dummyHumanoid =
-            dummy:FindFirstChildOfClass("Humanoid")
-
-        if not dummyHumanoid or dummyHumanoid.Health <= 0 then
+        if currentTime < attack.StartAt then
             return
         end
 
-        for _, target in ipairs(
-            CombatCollision.Query(
-                character,
-                hitbox.Size,
-                hitbox.Offset
+        -- CombatCollision.Query retorna todos os
+        -- personagens com Humanoid dentro da hitbox.
+        local targets = CombatCollision.Query(
+            character,
+            hitbox.Size,
+            hitbox.Offset
+        )
+
+        for _, target in ipairs(targets) do
+
+            -- Impede atingir a si mesmo.
+            if target == character then
+                continue
+            end
+
+            local targetHumanoid =
+                target:FindFirstChildOfClass("Humanoid")
+
+            if not targetHumanoid
+                or targetHumanoid.Health <= 0 then
+
+                continue
+            end
+
+            -- Resolve dano, Guard, Hitstun,
+            -- Knockback e Guard Break.
+            local applied = CombatHit.Apply(
+                player,
+                target,
+                attackName,
+                attack.Damage,
+                attack.GuardBreak
             )
-        ) do
-            if target == dummy then
-                local applied = CombatHit.Apply(
-                    player,
-                    target,
-                    attackName,
-                    attack.Damage,
-                    attack.GuardBreak
+
+            if applied then
+                print(
+                    "[CombatServer] HIT CONFIRMADO:",
+                    player.Name,
+                    "->",
+                    target.Name,
+                    "| Ataque:",
+                    attackName
                 )
 
-                if applied then
-                    finish(player, attack, true)
-                    return
-                end
+                finish(player, attack, true)
+                return
             end
         end
     end
@@ -375,4 +470,4 @@ Players.PlayerRemoving:Connect(function(player)
     heavyCharges[player] = nil
 end)
 
-print("[CombatServer] Heavy Melee + Guard habilitados")
+print("[CombatServer] Heavy Melee + Guard + PvP habilitados")
