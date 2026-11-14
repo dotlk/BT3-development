@@ -11,7 +11,7 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local shared = RS:WaitForChild("Shared")
 
-local StateMachine = require(shared:WaitForChild("StateMachine"))
+local StateMachine = require(shared:WaitForChild("Combat"):WaitForChild("StateMachine"))
 local AnimationData = require(shared:WaitForChild("AnimationData"))
 
 local attackEvent = RS:WaitForChild("CombatAttack")
