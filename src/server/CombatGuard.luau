@@ -7,9 +7,15 @@ local CombatStun = require(
     script.Parent:WaitForChild("CombatStun")
 )
 
+local GuardService = require(
+    script.Parent:WaitForChild("GuardService")
+)
+
 local CombatGuard = {}
 
-local MAX_SEGMENTS = 4
+-- ==========================================
+-- DIRECAO DO ATAQUE
+-- ==========================================
 
 local function isFrontal(attacker, defender)
     local attackerCharacter = attacker.Character
@@ -24,7 +30,8 @@ local function isFrontal(attacker, defender)
         return false
     end
 
-    local offset = attackerRoot.Position - defenderRoot.Position
+    local offset =
+        attackerRoot.Position - defenderRoot.Position
 
     local horizontal = Vector3.new(
         offset.X,
@@ -51,22 +58,18 @@ local function isFrontal(attacker, defender)
     return forward.Unit:Dot(horizontal.Unit) >= 0
 end
 
--- Retorna true quando o golpe foi resolvido pelo Guard.
+-- ==========================================
+-- RESOLUCAO DO GUARD
+-- ==========================================
+
 function CombatGuard.Resolve(
     attacker,
     defender,
     attackName,
     guardBreak
 )
-    if defender:GetAttribute("Guarding") ~= true then
-        return false
-    end
-
-    if defender:GetAttribute("GuardBroken") == true then
-        return false
-    end
-
-    if defender:GetAttribute("CombatStunned") == true then
+    -- Verifica se o alvo esta defendendo.
+    if not GuardService.IsGuarding(defender) then
         return false
     end
 
@@ -77,69 +80,66 @@ function CombatGuard.Resolve(
         return false
     end
 
-    local segments = defender:GetAttribute("GuardSegments")
-
-    if typeof(segments) ~= "number" then
-        return false
-    end
-
-    segments = math.clamp(
-        math.floor(segments),
-        0,
-        MAX_SEGMENTS
-    )
-
-    if segments <= 0 then
-        return false
-    end
-
+    -- Ataques pelas costas ignoram o Guard.
     if not isFrontal(attacker, defender) then
-        print("[Guard] Ataque pelas costas:", attackName)
-        return false
-    end
-
-    -- Heavy suficientemente carregado quebra o Guard.
-    if attackName == "HeavyPunch" and guardBreak == true then
-        CombatStun.ApplyGuardBreak(defender, humanoid)
-        return true
-    end
-
-    -- Golpes que consomem um segmento.
-    if attackName == "Finisher4"
-        or attackName == "HeavyPunch" then
-
-        segments -= 1
-        defender:SetAttribute("GuardSegments", segments)
-
         print(
-            "[Guard] Bloqueado:",
-            attackName,
-            "| Segmentos restantes:",
-            segments
-        )
-
-        if segments <= 0 then
-            defender:SetAttribute("Guarding", false)
-            print("[Guard] Defesa esgotada:", defender.Name)
-        end
-
-        return true
-    end
-
-    -- Socos leves nao consomem segmentos.
-    if attackName == "Punch1"
-        or attackName == "Punch2"
-        or attackName == "Punch3" then
-
-        print(
-            "[Guard] Bloqueado sem custo:",
+            "[Guard] Ataque pelas costas:",
             attackName
         )
 
+        return false
+    end
+
+    -- ======================================
+    -- GUARD BREAK
+    -- ======================================
+
+    -- Heavy suficientemente carregado quebra
+    -- a defesa sem consumir segmento.
+    if attackName == "HeavyPunch"
+        and guardBreak == true then
+
+        CombatStun.ApplyGuardBreak(
+            defender,
+            humanoid
+        )
+
         return true
     end
 
-    return false
+    -- ======================================
+    -- BLOQUEIO NORMAL
+    -- ======================================
+
+    -- O GuardService controla os segmentos,
+    -- o consumo e o temporizador de regen.
+    local blocked = GuardService.Spend(
+        defender,
+        attackName
+    )
+
+    if not blocked then
+        return false
+    end
+
+    local segments =
+        GuardService.GetSegments(defender)
+
+    print(
+        "[Guard] Bloqueado:",
+        attackName,
+        "| Segmentos restantes:",
+        segments
+    )
+
+    if segments <= 0 then
+        print(
+            "[Guard] Defesa esgotada:",
+            defender.Name
+        )
+    end
+
+    return true
 end
 
 return CombatGuard

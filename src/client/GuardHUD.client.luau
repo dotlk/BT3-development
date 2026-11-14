@@ -11,7 +11,7 @@ local SEGMENT_COUNT = 4
 local SQUARE_SIZE = 15
 local SQUARE_GAP = 6
 
-local ACTIVE_COLOR = Color3.fromRGB(105, 198, 232)
+local ACTIVE_COLOR = Color3.fromRGB(255, 179, 0)
 local INACTIVE_COLOR = Color3.fromRGB(40, 40, 40)
 local BROKEN_COLOR = Color3.fromRGB(230, 95, 75)
 

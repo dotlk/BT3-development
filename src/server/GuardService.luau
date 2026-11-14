@@ -1,6 +1,6 @@
 
 -- GuardService.luau
--- Gerenciamento autoritativo dos segmentos de Guard.
+-- Controle autoritativo dos segmentos e regeneracao do Guard.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -13,42 +13,117 @@ local GuardService = {}
 
 local states = {}
 
+-- ==========================================
+-- CONFIGURACAO
+-- ==========================================
+
+local MAX_SEGMENTS = GuardData.MaxSegments
+local REGEN = GuardData.Regen
+
+-- ==========================================
+-- SINCRONIZACAO
+-- ==========================================
+
 local function publish(character, state)
     character:SetAttribute("GuardSegments", state.Segments)
-    character:SetAttribute("GuardMaxSegments", GuardData.MaxSegments)
+    character:SetAttribute("GuardMaxSegments", MAX_SEGMENTS)
     character:SetAttribute("Guarding", state.Guarding)
 end
 
-local function getState(character)
-    local state = states[character]
-
-    if not state then
-        state = {
-            Segments = GuardData.MaxSegments,
-            Guarding = false,
-            LastDamage = os.clock(),
-            NextRegen = nil,
-        }
-
-        states[character] = state
-        publish(character, state)
+local function isPaused(character, state)
+    if state.Guarding and not REGEN.WhileGuarding then
+        return true
     end
+
+    if character:GetAttribute("GuardBroken") == true
+        and not REGEN.WhileBroken then
+        return true
+    end
+
+    return false
+end
+
+local function scheduleRegen(state)
+    if not REGEN.Enabled
+        or state.Segments >= MAX_SEGMENTS then
+        state.NextRegen = nil
+        return
+    end
+
+    state.NextRegen = os.clock() + REGEN.Delay
+end
+
+-- ==========================================
+-- ESTADO
+-- ==========================================
+
+local function createState(character, preserveExisting)
+    local segments = MAX_SEGMENTS
+    local guarding = false
+
+    -- O TrainingDummy ja possui atributos iniciais
+    -- configurados pelo TrainingDummyGuard.
+    if preserveExisting then
+        local existing =
+            character:GetAttribute("GuardSegments")
+
+        if typeof(existing) == "number" then
+            segments = math.clamp(
+                math.floor(existing),
+                0,
+                MAX_SEGMENTS
+            )
+        end
+
+        guarding =
+            character:GetAttribute("Guarding") == true
+    end
+
+    if segments <= 0 then
+        guarding = false
+    end
+
+    local state = {
+        Segments = segments,
+        Guarding = guarding,
+        NextRegen = nil,
+        WasPaused = false,
+    }
+
+    states[character] = state
+
+    state.WasPaused = isPaused(character, state)
+
+    if segments < MAX_SEGMENTS
+        and not state.WasPaused then
+        scheduleRegen(state)
+    end
+
+    publish(character, state)
 
     return state
 end
 
+local function getState(character)
+    return states[character]
+        or createState(character, true)
+end
+
+-- ==========================================
+-- INICIALIZACAO
+-- ==========================================
+
 function GuardService.Initialize(character)
-    states[character] = {
-        Segments = GuardData.MaxSegments,
-        Guarding = false,
-        LastDamage = os.clock(),
-        NextRegen = nil,
-    }
+    local state = createState(character, false)
 
     character:SetAttribute("GuardBroken", false)
 
-    publish(character, states[character])
+    return state
 end
+
+-- ==========================================
+-- ATIVAR / DESATIVAR DEFESA
+-- ==========================================
 
 function GuardService.SetGuarding(character, guarding)
     if typeof(guarding) ~= "boolean" then
@@ -72,31 +147,69 @@ function GuardService.SetGuarding(character, guarding)
         end
     end
 
+    local wasPaused = isPaused(character, state)
+
     state.Guarding = guarding
+
+    local paused = isPaused(character, state)
+
+    if paused then
+        -- Regeneracao suspensa enquanto defende.
+        state.NextRegen = nil
+    elseif wasPaused then
+        -- Ao sair da defesa, reinicia o Delay.
+        scheduleRegen(state)
+    end
+
+    state.WasPaused = paused
+
     publish(character, state)
 
     return true
 end
 
+-- ==========================================
+-- CONSULTA DA DEFESA
+-- ==========================================
+
 function GuardService.IsGuarding(character)
     local state = getState(character)
 
-    return state.Guarding
+    -- O CombatStun e o TrainingDummyGuard tambem
+    -- modificam o atributo Guarding no servidor.
+    local guarding =
+        character:GetAttribute("Guarding") == true
+
+    return guarding
         and state.Segments > 0
         and character:GetAttribute("GuardBroken") ~= true
+        and character:GetAttribute("CombatStunned") ~= true
 end
+
+function GuardService.GetSegments(character)
+    return getState(character).Segments
+end
+
+-- ==========================================
+-- CONSUMO DE SEGMENTOS
+-- ==========================================
 
 function GuardService.Spend(character, attackName)
     local cost = GuardData.SegmentCosts[attackName]
 
-    if typeof(cost) ~= "number" then
+    if typeof(cost) ~= "number" or cost < 0 then
         return false
     end
 
     local state = getState(character)
 
-    if not state.Guarding or state.Segments <= 0 then
+    if not GuardService.IsGuarding(character) then
         return false
+    end
+
+    -- Socos leves bloqueados nao consomem Guard.
+    if cost == 0 then
+        return true
     end
 
     state.Segments = math.max(
@@ -104,22 +217,117 @@ function GuardService.Spend(character, attackName)
         state.Segments - cost
     )
 
-    state.LastDamage = os.clock()
-    state.NextRegen =
-        state.LastDamage + GuardData.Regen.Delay
-
     if state.Segments <= 0 then
         state.Guarding = false
+    else
+        state.Guarding =
+            character:GetAttribute("Guarding") == true
     end
+
+    local paused = isPaused(character, state)
+
+    if paused then
+        -- Enquanto estiver defendendo, nao regenera.
+        state.NextRegen = nil
+    else
+        -- Ao esgotar a defesa, inicia o Delay.
+        scheduleRegen(state)
+    end
+
+    state.WasPaused = paused
 
     publish(character, state)
 
     return true
 end
 
-function GuardService.GetSegments(character)
-    return getState(character).Segments
+-- ==========================================
+-- REGENERACAO
+-- ==========================================
+
+local function updateRegen(character, state)
+    if not REGEN.Enabled then
+        return
+    end
+
+    -- Sincroniza mudancas realizadas pelo
+    -- CombatStun e pelo TrainingDummyGuard.
+    local externalGuarding =
+        character:GetAttribute("Guarding") == true
+
+    state.Guarding = externalGuarding
+
+    local paused = isPaused(character, state)
+
+    if state.Segments >= MAX_SEGMENTS then
+        state.NextRegen = nil
+        state.WasPaused = paused
+        return
+    end
+
+    if paused then
+        state.NextRegen = nil
+        state.WasPaused = true
+        return
+    end
+
+    if state.WasPaused or not state.NextRegen then
+        -- Primeira recuperacao apos o Delay.
+        scheduleRegen(state)
+        state.WasPaused = false
+    end
+
+    local now = os.clock()
+
+    if now < state.NextRegen then
+        return
+    end
+
+    local interval = math.max(
+        REGEN.Interval,
+        0.01
+    )
+
+    local ticks = 1 + math.floor(
+        (now - state.NextRegen) / interval
+    )
+
+    state.Segments = math.min(
+        MAX_SEGMENTS,
+        state.Segments + ticks * REGEN.Amount
+    )
+
+    state.NextRegen =
+        state.NextRegen + ticks * interval
+
+    if state.Segments >= MAX_SEGMENTS then
+        state.NextRegen = nil
+    end
+
+    publish(character, state)
 end
+
+-- ==========================================
+-- LOOP DE REGENERACAO
+-- ==========================================
+
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+
+        for character, state in pairs(states) do
+            if not character.Parent then
+                states[character] = nil
+            else
+                updateRegen(character, state)
+            end
+        end
+    end
+end)
+
+-- ==========================================
+-- RESET / REMOCAO
+-- ==========================================
 
 function GuardService.Reset(character)
     GuardService.Initialize(character)
@@ -128,61 +336,6 @@ end
 function GuardService.Remove(character)
     states[character] = nil
 end
-
--- ==========================================
--- REGENERACAO
--- ==========================================
-
-task.spawn(function()
-    while true do
-        task.wait(0.25)
-
-        if not GuardData.Regen.Enabled then
-            continue
-        end
-
-        local now = os.clock()
-
-        for character, state in pairs(states) do
-            if not character.Parent then
-                states[character] = nil
-                continue
-            end
-
-            if state.Segments >= GuardData.MaxSegments then
-                state.NextRegen = nil
-                continue
-            end
-
-            if state.Guarding
-                and not GuardData.Regen.WhileGuarding then
-                continue
-            end
-
-            if character:GetAttribute("GuardBroken") == true
-                and not GuardData.Regen.WhileBroken then
-                continue
-            end
-
-            if not state.NextRegen then
-                state.NextRegen =
-                    now + GuardData.Regen.Delay
-            end
-
-            if now >= state.NextRegen then
-                state.Segments = math.min(
-                    GuardData.MaxSegments,
-                    state.Segments + GuardData.Regen.Amount
-                )
-
-                state.NextRegen =
-                    now + GuardData.Regen.Interval
-
-                publish(character, state)
-            end
-        end
-    end
-end)
 
 -- ==========================================
 -- JOGADORES
