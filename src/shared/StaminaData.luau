@@ -17,7 +17,7 @@ local StaminaData = {
     },
 
     Regen = {
-        Delay = 5.0,
+        Delay = 3.0,
         Amount = 20,
         Interval = 5.0,
     },

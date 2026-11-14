@@ -13,9 +13,17 @@ local StaminaService = {}
 
 local states = {}
 
+-- ==========================================
+-- SINCRONIZACAO
+-- ==========================================
+
 local function publish(player, state)
     player:SetAttribute("QuickStepStamina", state.Value)
 end
+
+-- ==========================================
+-- ESTADO
+-- ==========================================
 
 local function createState(player)
     local state = {
@@ -35,6 +43,10 @@ local function getState(player)
     return states[player] or createState(player)
 end
 
+-- ==========================================
+-- REGENERACAO
+-- ==========================================
+
 local function updateRegen(player, state)
     local now = os.clock()
     local regen = StaminaData.Regen
@@ -43,18 +55,25 @@ local function updateRegen(player, state)
         return
     end
 
-    if now - state.LastUse < regen.Delay then
+    -- Momento da primeira recuperacao.
+    local firstRegenAt = state.LastUse + regen.Delay
+
+    if now < firstRegenAt then
         return
     end
 
-    local firstRegenAt = state.LastUse + regen.Delay
+    local interval = math.max(regen.Interval, 0.01)
 
-    local elapsed = math.max(
-        0,
-        now - math.max(state.LastRegen, firstRegenAt)
+    -- Permite a primeira recuperacao ao fim do Delay,
+    -- sem esperar um Interval adicional.
+    local lastRegen = math.max(
+        state.LastRegen,
+        firstRegenAt - interval
     )
 
-    local intervals = math.floor(elapsed / regen.Interval)
+    local intervals = math.floor(
+        (now - lastRegen) / interval
+    )
 
     if intervals <= 0 then
         return
@@ -65,12 +84,14 @@ local function updateRegen(player, state)
         state.Value + intervals * regen.Amount
     )
 
-    state.LastRegen =
-        math.max(state.LastRegen, firstRegenAt)
-        + intervals * regen.Interval
+    state.LastRegen = lastRegen + intervals * interval
 
     publish(player, state)
 end
+
+-- ==========================================
+-- CONSUMO DE STAMINA
+-- ==========================================
 
 function StaminaService.TrySpend(player, action)
     local cost = StaminaData.Costs[action]
@@ -81,22 +102,30 @@ function StaminaService.TrySpend(player, action)
     end
 
     local state = getState(player)
+
     updateRegen(player, state)
 
     local now = os.clock()
-    local lastAction = state.LastActions[action] or -math.huge
+    local lastAction =
+        state.LastActions[action] or -math.huge
 
+    -- Verifica cooldown.
     if now - lastAction < cooldown then
         return false
     end
 
+    -- Verifica Stamina disponivel.
     if state.Value < cost then
         return false
     end
 
+    -- Consome Stamina.
     state.Value -= cost
+
+    -- Reinicia o tempo de espera da regeneracao.
     state.LastUse = now
     state.LastRegen = now
+
     state.LastActions[action] = now
 
     publish(player, state)
@@ -104,12 +133,21 @@ function StaminaService.TrySpend(player, action)
     return true
 end
 
+-- ==========================================
+-- CONSULTA
+-- ==========================================
+
 function StaminaService.Get(player)
     local state = getState(player)
+
     updateRegen(player, state)
 
     return state.Value
 end
+
+-- ==========================================
+-- RESET
+-- ==========================================
 
 function StaminaService.Reset(player)
     createState(player)
@@ -119,7 +157,10 @@ function StaminaService.Remove(player)
     states[player] = nil
 end
 
--- Inicializacao
+-- ==========================================
+-- INICIALIZACAO DOS JOGADORES
+-- ==========================================
+
 Players.PlayerAdded:Connect(function(player)
     createState(player)
 
@@ -138,7 +179,10 @@ end
 
 Players.PlayerRemoving:Connect(StaminaService.Remove)
 
--- Regeneracao periodica
+-- ==========================================
+-- REGENERACAO PERIODICA
+-- ==========================================
+
 task.spawn(function()
     while true do
         task.wait(0.25)

@@ -17,6 +17,7 @@ local AnimationData = require(shared:WaitForChild("AnimationData"))
 local attackEvent = RS:WaitForChild("CombatAttack")
 local hitstopEvent = RS:WaitForChild("CombatHitstop")
 local heavyEvent = RS:WaitForChild("CombatHeavyCharge")
+local guardRequest = RS:WaitForChild("GuardRequest")
 
 local FIRST_ATTACK = "Punch1"
 local DEFAULT_DURATION = 0.4
@@ -114,11 +115,12 @@ end
 
 local function setGuardAttribute(active)
     local c = character()
-    if not c then return end
-
-    if c:GetAttribute("Guarding") ~= active then
-        c:SetAttribute("Guarding", active)
+    if not c then
+        return
     end
+
+    -- O servidor controla o estado real da defesa.
+    guardRequest:FireServer(active)
 end
 
 -- ==========================================
