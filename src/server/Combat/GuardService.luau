@@ -6,7 +6,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GuardData = require(
-    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GuardData")
+    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Combat"):WaitForChild("GuardData")
 )
 
 local GuardService = {}
