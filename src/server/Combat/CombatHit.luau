@@ -11,7 +11,7 @@ local RunService = game:GetService("RunService")
 local shared = ReplicatedStorage:WaitForChild("Shared")
 
 local HitReactionData = require(
-    shared:WaitForChild("HitReactionData")
+    shared:WaitForChild("Combat"):WaitForChild("HitReactionData")
 )
 
 local AnimationData = require(
