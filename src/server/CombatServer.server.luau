@@ -1,5 +1,6 @@
 
 -- CombatServer.server.luau
+-- Validacao de ataques, Heavy Melee e Guard
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -80,6 +81,10 @@ local function finish(player, attack, confirmed)
     reply(player, attack, confirmed)
 end
 
+-- ==========================================
+-- CARREGAMENTO DO HEAVY
+-- ==========================================
+
 heavyEvent.OnServerEvent:Connect(function(player, action, chargeId)
     if typeof(action) ~= "string"
         or typeof(chargeId) ~= "number"
@@ -133,6 +138,10 @@ heavyEvent.OnServerEvent:Connect(function(player, action, chargeId)
         Character = character,
     }
 end)
+
+-- ==========================================
+-- PROCESSAMENTO DE ATAQUES
+-- ==========================================
 
 local function processAttack(
     player,
@@ -241,7 +250,6 @@ local function processAttack(
     if isHeavy then
         heavyCharges[player] = nil
     else
-        -- Socos normais nao podem aproveitar carga anterior.
         heavyCharges[player] = nil
     end
 
@@ -289,6 +297,10 @@ local function processAttack(
         "GuardBreak:", attack.GuardBreak
     )
 
+    -- ==========================================
+    -- DETECCAO DE COLISAO
+    -- ==========================================
+
     local function checkCollision()
         if activeAttacks[player] ~= attack then return end
 
@@ -306,7 +318,6 @@ local function processAttack(
 
         if currentTime < attack.StartAt then return end
 
-        -- Mantem o alvo de treinamento da versao atual.
         local dummy = Workspace:FindFirstChild("TrainingDummy")
         if not dummy then return end
 
@@ -329,7 +340,8 @@ local function processAttack(
                     player,
                     target,
                     attackName,
-                    attack.Damage
+                    attack.Damage,
+                    attack.GuardBreak
                 )
 
                 if applied then
@@ -346,6 +358,10 @@ end
 
 attackEvent.OnServerEvent:Connect(processAttack)
 
+-- ==========================================
+-- LIMPEZA
+-- ==========================================
+
 Players.PlayerRemoving:Connect(function(player)
     local attack = activeAttacks[player]
 
@@ -359,4 +375,4 @@ Players.PlayerRemoving:Connect(function(player)
     heavyCharges[player] = nil
 end)
 
-print("[CombatServer] Heavy Melee habilitado")
+print("[CombatServer] Heavy Melee + Guard habilitados")

@@ -1,7 +1,7 @@
 
 -- CombatController.client.luau
--- Combo normal + Heavy Melee carregavel
--- Hitstop e pausa estilizada na pose final do HeavyPunch
+-- Combo normal + Heavy Melee + Guard
+-- Guard congela na pose final da animacao
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -18,10 +18,6 @@ local attackEvent = RS:WaitForChild("CombatAttack")
 local hitstopEvent = RS:WaitForChild("CombatHitstop")
 local heavyEvent = RS:WaitForChild("CombatHeavyCharge")
 
--- ==========================================
--- CONFIGURACOES
--- ==========================================
-
 local FIRST_ATTACK = "Punch1"
 local DEFAULT_DURATION = 0.4
 
@@ -32,7 +28,6 @@ local COMBO_WINDOW_START = 0.25
 local COMBO_TRANSITION = 0.75
 local HIT_TIMEOUT = 0.60
 
--- Pausa estilizada do HeavyPunch
 local HEAVY_END_FREEZE_AT = 0.90
 local HEAVY_END_FREEZE_DURATION = 0.18
 
@@ -65,12 +60,14 @@ local mouseHeld = false
 local mousePressedAt = 0
 local mouseToken = 0
 
+local guardHeld = false
+local guardToken = 0
+
 local heavyPhase = nil
 local heavyStartedAt = 0
 local heavyCharge = 0
 local heavyChargeId = 0
 
--- Estado da pausa final do HeavyPunch
 local heavyEndFreezeStartedAt = nil
 local heavyEndFreezeEndsAt = 0
 local heavyEndFreezeDone = false
@@ -86,16 +83,12 @@ end
 
 local function isRolling()
     local c = character()
-
-    return c
-        and c:GetAttribute("IsRolling") == true
+    return c and c:GetAttribute("IsRolling") == true
 end
 
 local function isStunned()
     local c = character()
-
-    return c
-        and c:GetAttribute("CombatStunned") == true
+    return c and c:GetAttribute("CombatStunned") == true
 end
 
 local function canAct()
@@ -111,6 +104,15 @@ local function setHeavyAttributes(active, charge)
 
     c:SetAttribute("HeavyCharging", active)
     c:SetAttribute("HeavyCharge", charge)
+end
+
+local function setGuardAttribute(active)
+    local c = character()
+    if not c then return end
+
+    if c:GetAttribute("Guarding") ~= active then
+        c:SetAttribute("Guarding", active)
+    end
 end
 
 -- ==========================================
@@ -131,6 +133,7 @@ local function playTrack(name, fade)
 
     local data = AnimationData.Combat[name]
         or AnimationData.HeavyAnimations[name]
+        or AnimationData.Guard[name]
 
     if not data then return nil end
 
@@ -139,6 +142,91 @@ local function playTrack(name, fade)
     track:AdjustSpeed(data.Speed or 1)
 
     return track
+end
+
+-- ==========================================
+-- GUARD
+-- ==========================================
+
+local function freezeGuardTrack(track, token)
+    local config = AnimationData.Guard.Block
+    local freezeAt = config.FreezeAt or 0.99
+
+    task.spawn(function()
+        local deadline = os.clock() + 3
+
+        -- Aguarda o carregamento da duracao.
+        while token == guardToken
+            and track.IsPlaying
+            and track.Length <= 0
+            and os.clock() < deadline do
+
+            task.wait()
+        end
+
+        if token ~= guardToken
+            or not track.IsPlaying
+            or track.Length <= 0 then
+
+            return
+        end
+
+        local targetPosition = track.Length
+            * math.clamp(freezeAt, 0, 0.999)
+
+        while token == guardToken
+            and track.IsPlaying
+            and track.TimePosition < targetPosition do
+
+            task.wait()
+        end
+
+        if token ~= guardToken
+            or not track.IsPlaying
+            or fighter:GetState() ~= "Block" then
+
+            return
+        end
+
+        track.TimePosition = targetPosition
+        track:AdjustSpeed(0)
+    end)
+end
+
+local function startGuard()
+    if not guardHeld or not canAct() then
+        return
+    end
+
+    if fighter:GetState() ~= "Idle" then
+        return
+    end
+
+    if fighter:Transition("Block") then
+        guardToken += 1
+
+        setGuardAttribute(true)
+
+        local track = playTrack("Block", 0.12)
+
+        if track then
+            freezeGuardTrack(track, guardToken)
+        end
+
+        print("[Guard] Ativado")
+    end
+end
+
+local function stopGuard()
+    guardToken += 1
+
+    stopTrack("Block", 0.12)
+
+    if fighter:GetState() == "Block" then
+        fighter:Transition("Idle")
+    end
+
+    setGuardAttribute(false)
 end
 
 -- ==========================================
@@ -200,7 +288,7 @@ local function cancelHeavy(notifyServer)
 
     setHeavyAttributes(false, 0)
 
-    if fighter:GetState() == "Block" then
+    if fighter:GetState() == "HeavyCharge" then
         fighter:ForceState("Idle")
     end
 end
@@ -212,7 +300,10 @@ end
 local function setupCharacter(c)
     attackSequence += 1
     mouseToken += 1
+    guardToken += 1
+
     mouseHeld = false
+    guardHeld = false
 
     cancelHeavy(false)
     fighter:ForceState("Idle")
@@ -255,8 +346,10 @@ local function setupCharacter(c)
 
     loadSet(AnimationData.Combat)
     loadSet(AnimationData.HeavyAnimations)
+    loadSet(AnimationData.Guard)
 
     setHeavyAttributes(false, 0)
+    setGuardAttribute(false)
 
     print("[Combat] Animacoes carregadas")
 end
@@ -418,7 +511,7 @@ local function startHeavy()
         return
     end
 
-    fighter:ForceState("Block")
+    fighter:ForceState("HeavyCharge")
 
     heavyChargeId += 1
     heavyStartedAt = os.clock()
@@ -598,7 +691,19 @@ end)
 
 RunService.Heartbeat:Connect(function()
 
-    -- Atualiza carregamento
+    -- Atualiza Guard
+    if fighter:GetState() == "Block" then
+        if not guardHeld or not canAct() then
+            stopGuard()
+        end
+    elseif guardHeld
+        and canAct()
+        and fighter:GetState() == "Idle" then
+
+        startGuard()
+    end
+
+    -- Atualiza carregamento do Heavy
     if heavyPhase then
         if not canAct() then
             cancelHeavy(true)
@@ -780,9 +885,28 @@ UIS.InputBegan:Connect(function(input, processed)
         return
     end
 
+    -- M2: Guard
+    if input.UserInputType
+        == Enum.UserInputType.MouseButton2 then
+
+        guardHeld = true
+
+        if mouseHeld and not heavyPhase then
+            mouseHeld = false
+            mouseToken += 1
+        end
+
+        startGuard()
+        return
+    end
+
     if input.UserInputType
         ~= Enum.UserInputType.MouseButton1 then
 
+        return
+    end
+
+    if guardHeld or fighter:GetState() == "Block" then
         return
     end
 
@@ -801,7 +925,8 @@ UIS.InputBegan:Connect(function(input, processed)
         function()
 
             if token ~= mouseToken
-                or not mouseHeld then
+                or not mouseHeld
+                or guardHeld then
 
                 return
             end
@@ -820,6 +945,18 @@ UIS.InputBegan:Connect(function(input, processed)
 end)
 
 UIS.InputEnded:Connect(function(input)
+
+    -- Soltar M2
+    if input.UserInputType
+        == Enum.UserInputType.MouseButton2 then
+
+        guardHeld = false
+        stopGuard()
+
+        print("[Guard] Desativado")
+        return
+    end
+
     if input.UserInputType
         ~= Enum.UserInputType.MouseButton1 then
 
@@ -838,7 +975,9 @@ UIS.InputEnded:Connect(function(input)
     else
         local held = os.clock() - mousePressedAt
 
-        if held < heavyConfig.HoldThreshold then
+        if held < heavyConfig.HoldThreshold
+            and not guardHeld then
+
             performAttack()
         end
     end
@@ -854,4 +993,4 @@ if player.Character then
     setupCharacter(player.Character)
 end
 
-print("[Combat] Combo + Heavy Melee carregados")
+print("[Combat] Combo + Heavy Melee + Guard carregados")

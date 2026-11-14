@@ -11,6 +11,15 @@ local AnimationData = {
         MaxMultiplier = 3.00,
     },
 
+    Guard = {
+        Block = {
+            Id = "rbxassetid://91707314777281",
+            Priority = Enum.AnimationPriority.Action2,
+            Looped = true,
+            Speed = 1,
+        },
+    },
+
     Combat = {
         Punch1 = {
             Id = "rbxassetid://76413761527862",
@@ -186,4 +195,3 @@ local AnimationData = {
 }
 
 return AnimationData
-aa

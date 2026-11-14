@@ -1,6 +1,6 @@
 
 -- CombatHit.luau
--- Resolucao de acertos, Hitstun, Knockback e Hitstop
+-- Resolucao de acertos, Guard, Hitstun, Knockback e Hitstop
 -- Reacoes com pose inicial de impacto
 -- Suporte ao HeavyPunch
 
@@ -19,6 +19,10 @@ local AnimationData = require(
     shared:WaitForChild("AnimationData")
 )
 
+local CombatGuard = require(
+    script.Parent:WaitForChild("CombatGuard")
+)
+
 local CombatHit = {}
 
 -- Configuracoes provisorias
@@ -26,7 +30,6 @@ local HITSTUN_DURATION = 0.25
 local KNOCKBACK_DURATION = 0.55
 local KNOCKBACK_SPEED = 35
 
--- Posicao inicial da animacao durante o Hitstop
 local HIT_REACTION_FREEZE_TIME = 0.08
 
 local HIT_ANIMATIONS = {
@@ -130,8 +133,6 @@ local function stopHitAnimation(humanoid)
     end
 end
 
--- Reproduz a animacao de reacao
--- Pode iniciar congelada em uma pose de impacto
 local function playHitAnimation(
     humanoid,
     attackName,
@@ -159,18 +160,11 @@ local function playHitAnimation(
     local speed =
         AnimationData.HitReactions[reactionName].Speed or 1
 
-    -- Inicia sem fade-in
     track:Play(0)
 
     if frozen then
-        -- Congela a animacao imediatamente
         track:AdjustSpeed(0)
 
-        -- Avanca ate uma pose inicial de impacto
-        -- sem adicionar atraso ao golpe.
-        --
-        -- Se Length ainda for 0, a posicao
-        -- permanecera no inicio da animacao.
         local length = track.Length
 
         if length > 0 then
@@ -272,7 +266,6 @@ local function finishReaction(
     print("[HitReaction] FIM:", defender.Name)
 end
 
--- Consulta o Hitstop configurado para o golpe
 local function getHitstopDuration(attackName)
     local attackData = AnimationData.Combat[attackName]
 
@@ -287,8 +280,6 @@ local function getHitstopDuration(attackName)
     )
 end
 
--- Congela o defensor e executa uma funcao
--- quando o Hitstop termina
 local function applyDefenderHitstop(
     defender,
     humanoid,
@@ -323,7 +314,6 @@ local function applyDefenderHitstop(
     )
 
     task.delay(duration, function()
-        -- Ignora callbacks de golpes antigos
         if state.Sequence ~= sequence then
             return
         end
@@ -376,8 +366,6 @@ local function applyHitstun(defender, attackName)
         sequence,
         attackName,
         function()
-            -- O Hitstun efetivo comeca
-            -- somente apos o Hitstop
             task.delay(HITSTUN_DURATION, function()
                 finishReaction(
                     defender,
@@ -449,7 +437,6 @@ local function applyKnockback(
         state
     )
 
-    -- Interrompe o deslocamento horizontal anterior
     local currentVelocity = root.AssemblyLinearVelocity
 
     root.AssemblyLinearVelocity = Vector3.new(
@@ -475,8 +462,6 @@ local function applyKnockback(
 
             local elapsed = 0
 
-            -- Knockback com desaceleracao
-            -- iniciado somente apos o Hitstop
             state.KnockbackConnection =
                 RunService.Heartbeat:Connect(function(dt)
 
@@ -528,11 +513,16 @@ local function applyKnockback(
     )
 end
 
+-- ==========================================
+-- RESOLUCAO FINAL DO GOLPE
+-- ==========================================
+
 function CombatHit.Apply(
     attacker,
     defender,
     attackName,
-    damage
+    damage,
+    guardBreak
 )
     local attackData =
         HitReactionData.Attacks[attackName]
@@ -552,6 +542,26 @@ function CombatHit.Apply(
         return false
     end
 
+    -- Verifica o Guard antes de causar dano.
+    local blocked = CombatGuard.Resolve(
+        attacker,
+        defender,
+        attackName,
+        guardBreak
+    )
+
+    if blocked then
+        print(
+            "[CombatHit] Golpe defendido:",
+            attackName,
+            "| Defensor:",
+            defender.Name
+        )
+
+        return true
+    end
+
+    -- Golpe nao defendido
     humanoid:TakeDamage(damage)
 
     if humanoid.Health > 0 then

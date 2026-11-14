@@ -1,6 +1,6 @@
 
 -- StateMachine.luau
--- Máquina de estados reutilizável para combate
+-- Maquina de estados reutilizavel para combate
 
 local StateMachine = {}
 StateMachine.__index = StateMachine
@@ -9,6 +9,7 @@ export type State =
     "Idle"
     | "Attack"
     | "Block"
+    | "HeavyCharge"
     | "Dodge"
     | "Stun"
     | "Knockback"
@@ -18,45 +19,53 @@ local TRANSITIONS = {
     Idle = {
         Attack = true,
         Block = true,
+        HeavyCharge = true,
         Dodge = true,
         Stun = true,
-        Knockback = true
+        Knockback = true,
     },
 
     Attack = {
         Idle = true,
         Stun = true,
         Knockback = true,
-        Recovery = true
+        Recovery = true,
     },
 
     Block = {
         Idle = true,
         Stun = true,
-        Knockback = true
+        Knockback = true,
+    },
+
+    HeavyCharge = {
+        Idle = true,
+        Attack = true,
+        Stun = true,
+        Knockback = true,
     },
 
     Dodge = {
         Idle = true,
         Stun = true,
-        Recovery = true
+        Recovery = true,
     },
 
     Stun = {
         Idle = true,
         Knockback = true,
-        Recovery = true
+        Recovery = true,
     },
 
     Knockback = {
-        Recovery = true
+        Recovery = true,
     },
 
     Recovery = {
         Idle = true,
         Stun = true,
-        Knockback = true
-    }
+        Knockback = true,
+    },
 }
 
 function StateMachine.new(initialState: State?)
